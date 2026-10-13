@@ -252,3 +252,20 @@ let%expect_test "server version matches the server's own report" =
     [%expect {| (true true) |}];
     return ())
 ;;
+
+let%expect_test "host names are resolved off the scheduler and every address is tried" =
+  let%bind cluster = Pg_test.shared () in
+  (* The cluster listens on 127.0.0.1 only; "localhost" may resolve to ::1 first. *)
+  let config = { (Pg_test.config cluster) with host = Some "localhost" } in
+  let%bind r = Connection.connect config in
+  (match r with
+   | Ok conn ->
+     don't_wait_for (Connection.close conn);
+     print_endline "connected"
+   | Error e -> print_s [%sexp (e : Pg_error.t)]);
+  [%expect {| connected |}];
+  let%bind r = Connection.connect { config with host = Some "no-such-host.invalid" } in
+  print_s [%sexp (Result.error r : Pg_error.t option)];
+  [%expect {| ((Connect "could not resolve host \"no-such-host.invalid\"")) |}];
+  return ()
+;;

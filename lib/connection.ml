@@ -104,59 +104,95 @@ let wait_fd fd what ~timeout =
      | `Interrupted, `Interrupted -> `Timeout)
 ;;
 
+(* [PQconnectStart] resolves a host name with a blocking getaddrinfo. Resolve it here
+   instead, on Async's thread pool, and hand libpq the addresses as [hostaddr] (one [host]
+   entry per address, so TLS still checks the name and libpq still tries each address in
+   turn). Socket paths, IP literals and explicit [hostaddr] pass through. *)
+let resolve_host (config : Config.t) =
+  let is_ip h = Result.is_ok (Result.try_with (fun () -> Unix.Inet_addr.of_string h)) in
+  match config.host with
+  | None -> return (Ok config)
+  | Some h
+    when String.is_prefix h ~prefix:"/"
+         || String.mem h ','
+         || is_ip h
+         || List.Assoc.mem config.extra "hostaddr" ~equal:String.equal ->
+    return (Ok config)
+  | Some h ->
+    (match%map Monitor.try_with (fun () -> Unix.Host.getbyname h) with
+     | Ok (Some { addresses; _ }) when not (Array.is_empty addresses) ->
+       let addresses = Array.to_list addresses |> List.map ~f:Unix.Inet_addr.to_string in
+       Ok
+         { config with
+           host = Some (String.concat ~sep:"," (List.map addresses ~f:(const h)))
+         ; extra = ("hostaddr", String.concat ~sep:"," addresses) :: config.extra
+         }
+     | Ok _ | Error _ -> Error (Pg_error.Connect (sprintf "could not resolve host %S" h)))
+;;
+
 let connect_handshake (config : Config.t) =
   let deadline = Time_ns.add (Time_ns.now ()) config.connect_timeout in
   let timeout = Clock_ns.at deadline in
-  match
-    Result.try_with (fun () ->
-      new Postgresql.connection ~conninfo:(Config.to_conninfo config) ~startonly:true ())
-  with
-  | Error exn -> return (Error (Pg_error.Connect (describe_exn exn)))
-  | Ok conn ->
-    let fail msg =
-      (try conn#finish with
-       | _ -> ());
-      return (Error (Pg_error.Connect msg))
-    in
-    (* The socket can change between polls (libpq tries each address, and retries without
-       TLS under sslmode=prefer), so each wait gets a fresh Async [Fd] that is released,
-       without closing the descriptor libpq owns, as soon as it fires. *)
-    let wait dir =
-      match Result.try_with (fun () -> conn#socket_descr) with
-      | Error exn -> return (`Error (describe_exn exn))
-      | Ok descr ->
-        let fd = Fd.create (Socket `Active) descr (Info.of_string "pg-async connect") in
-        let%bind r = wait_fd fd dir ~timeout in
-        let%map () = Fd.close ~file_descriptor_handling:Do_not_close_file_descriptor fd in
-        (match r with
-         | `Ready -> `Ready
-         | `Timeout -> `Timeout
-         | `Gone -> `Error "socket closed during connect")
-    in
-    let rec poll (status : Postgresql.polling_status) =
-      match status with
-      | Polling_ok -> return (Ok conn)
-      | Polling_failed -> fail (String.strip conn#error_message)
-      | Polling_reading | Polling_writing ->
-        let dir =
-          match status with
-          | Polling_reading -> `Read
-          | _ -> `Write
-        in
-        (match%bind wait dir with
-         | `Ready ->
-           (match Result.try_with (fun () -> conn#connect_poll) with
-            | Ok status -> poll status
-            | Error exn -> fail (describe_exn exn))
-         | `Timeout ->
-           fail
-             (sprintf
-                "connect timed out after %s"
-                (Time_ns.Span.to_string_hum config.connect_timeout))
-         | `Error msg -> fail msg)
-    in
-    (* libpq's documented start state: behave as if the last poll asked to write. *)
-    poll Polling_writing
+  match%bind resolve_host config with
+  | Error _ as e -> return e
+  | Ok resolved ->
+    (match
+       Result.try_with (fun () ->
+         new Postgresql.connection
+           ~conninfo:(Config.to_conninfo resolved)
+           ~startonly:true
+           ())
+     with
+     | Error exn -> return (Error (Pg_error.Connect (describe_exn exn)))
+     | Ok conn ->
+       let fail msg =
+         (try conn#finish with
+          | _ -> ());
+         return (Error (Pg_error.Connect msg))
+       in
+       (* The socket can change between polls (libpq tries each address, and retries
+          without TLS under sslmode=prefer), so each wait gets a fresh Async [Fd] that is
+          released, without closing the descriptor libpq owns, as soon as it fires. *)
+       let wait dir =
+         match Result.try_with (fun () -> conn#socket_descr) with
+         | Error exn -> return (`Error (describe_exn exn))
+         | Ok descr ->
+           let fd =
+             Fd.create (Socket `Active) descr (Info.of_string "pg-async connect")
+           in
+           let%bind r = wait_fd fd dir ~timeout in
+           let%map () =
+             Fd.close ~file_descriptor_handling:Do_not_close_file_descriptor fd
+           in
+           (match r with
+            | `Ready -> `Ready
+            | `Timeout -> `Timeout
+            | `Gone -> `Error "socket closed during connect")
+       in
+       let rec poll (status : Postgresql.polling_status) =
+         match status with
+         | Polling_ok -> return (Ok conn)
+         | Polling_failed -> fail (String.strip conn#error_message)
+         | Polling_reading | Polling_writing ->
+           let dir =
+             match status with
+             | Polling_reading -> `Read
+             | _ -> `Write
+           in
+           (match%bind wait dir with
+            | `Ready ->
+              (match Result.try_with (fun () -> conn#connect_poll) with
+               | Ok status -> poll status
+               | Error exn -> fail (describe_exn exn))
+            | `Timeout ->
+              fail
+                (sprintf
+                   "connect timed out after %s"
+                   (Time_ns.Span.to_string_hum config.connect_timeout))
+            | `Error msg -> fail msg)
+       in
+       (* libpq's documented start state: behave as if the last poll asked to write. *)
+       poll Polling_writing)
 ;;
 
 let drain_notifications t =
