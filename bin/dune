@@ -1,0 +1,7 @@
+(executable
+ (name pg_async_cli)
+ (public_name pg-async)
+ (package pg-async)
+ (libraries pg-async core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))
