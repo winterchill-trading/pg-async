@@ -144,11 +144,15 @@ libpq runs in non-blocking mode and never waits on the network:
    stall the other).
 3. Results: `PQconsumeInput`, `PQisBusy`, `PQgetResult` whenever the socket is readable,
    until `PQgetResult` returns NULL. Notifications are drained after every read.
-4. Calls on one connection are serialized by a sequencer; use `Pool` for parallelism.
-5. Timeouts cancel with `pg_cancel_backend` from a short-lived second session: the
+4. Async watches a `dup` of libpq's socket, never libpq's own descriptor: libpq closes
+   its socket by itself when the server hangs up, and on Linux epoll then fails with
+   EBADF and stops the scheduler. The duplicate is released with a plain `close`
+   (Async's `Fd.close` would `shutdown` the shared socket).
+5. Calls on one connection are serialized by a sequencer; use `Pool` for parallelism.
+6. Timeouts cancel with `pg_cancel_backend` from a short-lived second session: the
    bindings take libpq's cancel handle at `PQconnectStart`, before the backend key
    exists, so `PQcancel` cannot be used.
-6. Server notices are dropped inside libpq: an OCaml notice callback would run inside
+7. Server notices are dropped inside libpq: an OCaml notice callback would run inside
    the bindings' blocking sections and hang.
 
 `In_thread` is used only for DNS. Nothing else in the library blocks the scheduler.
