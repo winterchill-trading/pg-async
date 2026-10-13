@@ -130,6 +130,16 @@ let resolve_host (config : Config.t) =
      | Ok _ | Error _ -> Error (Pg_error.Connect (sprintf "could not resolve host %S" h)))
 ;;
 
+(* Async watches a duplicate of libpq's socket, never the descriptor libpq owns: libpq
+   closes its socket by itself when the server goes away (inside PQconsumeInput), and on
+   Linux Async's epoll then fails with EBADF removing a descriptor that is already closed,
+   which kills the scheduler. The duplicate shares the socket, so readiness is the same,
+   and Async closes it normally. *)
+let watch_fd descr ~name =
+  let dup = Core_unix.dup ~close_on_exec:true descr in
+  Fd.create (Socket `Active) dup (Info.of_string name)
+;;
+
 let connect_handshake (config : Config.t) =
   let deadline = Time_ns.add (Time_ns.now ()) config.connect_timeout in
   let timeout = Clock_ns.at deadline in
@@ -157,13 +167,9 @@ let connect_handshake (config : Config.t) =
          match Result.try_with (fun () -> conn#socket_descr) with
          | Error exn -> return (`Error (describe_exn exn))
          | Ok descr ->
-           let fd =
-             Fd.create (Socket `Active) descr (Info.of_string "pg-async connect")
-           in
+           let fd = watch_fd descr ~name:"pg-async connect" in
            let%bind r = wait_fd fd dir ~timeout in
-           let%map () =
-             Fd.close ~file_descriptor_handling:Do_not_close_file_descriptor fd
-           in
+           let%map () = Fd.close fd in
            (match r with
             | `Ready -> `Ready
             | `Timeout -> `Timeout
@@ -212,12 +218,8 @@ let shut_down t =
   | Open ->
     t.state <- Closed;
     Option.iter t.idle_interrupt ~f:(fun i -> Ivar.fill_if_empty i ());
-    (* Async must forget the descriptor before [PQfinish] closes it, or a new socket
-       reusing the number would collide with the stale registration. *)
     don't_wait_for
-      (let%map () =
-         Fd.close ~file_descriptor_handling:Do_not_close_file_descriptor t.fd
-       in
+      (let%map () = Fd.close t.fd in
        (try t.conn#finish with
         | _ -> ());
        Ivar.fill_if_empty t.closed ())
@@ -320,8 +322,7 @@ let rec connect ?metrics (config : Config.t) =
          (* An OCaml notice callback would run inside the stubs' blocking sections
             (PQisBusy parses notices there) and hang; drop notices in C instead. *)
          conn#set_notice_processing `Quiet;
-         let descr = conn#socket_descr in
-         ( Fd.create (Socket `Active) descr (Info.of_string "pg-async")
+         ( watch_fd conn#socket_descr ~name:"pg-async"
          , conn#backend_pid
          , (* The bindings split PQserverVersion as major.minor.revision, two digits each,
               the pre-10 scheme; join it back into the number. *)
