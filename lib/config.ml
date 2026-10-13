@@ -93,7 +93,8 @@ let create
 let parse_int ~what s =
   match Int.of_string_opt s with
   | Some n when n >= 0 -> Ok n
-  | Some _ | None -> Or_error.error_s [%message "invalid number" what (s : string)]
+  | Some _ | None ->
+    Or_error.error_s [%message "invalid number" (what : string) ~value:(s : string)]
 ;;
 
 let of_url url =
