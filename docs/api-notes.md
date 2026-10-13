@@ -41,6 +41,15 @@ server (macOS Homebrew) and the Ubuntu packages in CI.
 - `#error_field` returns "" for absent fields. `SEVERITY_NONLOCALIZED` is stable across
   locales.
 
+## Sockets under Async
+
+- libpq closes its own socket when it sees EOF (inside `PQconsumeInput`). If Async
+  watches that descriptor, Linux epoll fails removing it (`epoll_ctl` EBADF, "bug in
+  async scheduler"); macOS's select loop does not notice. Watch a `dup` instead.
+- Release the duplicate with `Fd.close ~file_descriptor_handling:Do_not_close_file_descriptor`
+  and a plain `close`: `Fd.close` on an active socket calls `shutdown`, which ends the
+  TCP session for libpq as well ("server closed the connection unexpectedly").
+
 ## Cancelling
 
 - The bindings capture the `PGcancel` handle (`PQgetCancel`) when the connection object
