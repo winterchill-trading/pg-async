@@ -140,6 +140,14 @@ let watch_fd descr ~name =
   Fd.create (Socket `Active) dup (Info.of_string name)
 ;;
 
+(* [Fd.close] on an active socket calls [shutdown] first, which would end the session for
+   libpq too; release the duplicate with a plain close instead. *)
+let release_fd fd =
+  let descr = Fd.file_descr_exn fd in
+  let%map () = Fd.close ~file_descriptor_handling:Do_not_close_file_descriptor fd in
+  Core_unix.close descr
+;;
+
 let connect_handshake (config : Config.t) =
   let deadline = Time_ns.add (Time_ns.now ()) config.connect_timeout in
   let timeout = Clock_ns.at deadline in
@@ -169,7 +177,7 @@ let connect_handshake (config : Config.t) =
          | Ok descr ->
            let fd = watch_fd descr ~name:"pg-async connect" in
            let%bind r = wait_fd fd dir ~timeout in
-           let%map () = Fd.close fd in
+           let%map () = release_fd fd in
            (match r with
             | `Ready -> `Ready
             | `Timeout -> `Timeout
@@ -219,7 +227,7 @@ let shut_down t =
     t.state <- Closed;
     Option.iter t.idle_interrupt ~f:(fun i -> Ivar.fill_if_empty i ());
     don't_wait_for
-      (let%map () = Fd.close t.fd in
+      (let%map () = release_fd t.fd in
        (try t.conn#finish with
         | _ -> ());
        Ivar.fill_if_empty t.closed ())
