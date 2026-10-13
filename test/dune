@@ -1,6 +1,13 @@
 (library
  (name pg_async_test)
- (libraries pg-async pg-async.testing core core_unix async yojson)
+ (libraries
+  pg-async
+  pg-async.testing
+  core
+  core_unix
+  core_unix.filename_unix
+  async
+  yojson)
  (inline_tests
   (flags
    (:standard -source-tree-root .)))
