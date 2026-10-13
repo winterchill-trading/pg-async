@@ -273,7 +273,9 @@ let rec connect ?metrics (config : Config.t) =
     (match
        Result.try_with (fun () ->
          conn#set_nonblocking true;
-         conn#set_notice_processor (fun (_ : string) -> ());
+         (* An OCaml notice callback would run inside the stubs' blocking sections
+            (PQisBusy parses notices there) and hang; drop notices in C instead. *)
+         conn#set_notice_processing `Quiet;
          let descr = conn#socket_descr in
          ( Fd.create (Socket `Active) descr (Info.of_string "pg-async")
          , conn#backend_pid

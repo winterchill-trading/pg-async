@@ -220,3 +220,15 @@ let%expect_test "connect errors" =
   [%expect {| true |}];
   return ()
 ;;
+
+let%expect_test "server notices do not stall the connection" =
+  with_conn (fun conn ->
+    let%bind r =
+      Query.execute
+        conn
+        "DO $$ BEGIN RAISE NOTICE 'a notice'; RAISE WARNING 'a warning'; END $$"
+    in
+    print_result [%sexp_of: int] r;
+    [%expect {| (Ok 0) |}];
+    return ())
+;;
