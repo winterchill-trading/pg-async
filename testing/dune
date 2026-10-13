@@ -1,0 +1,6 @@
+(library
+ (name pg_test)
+ (public_name pg-async.testing)
+ (libraries pg-async core core_unix core_unix.filename_unix async)
+ (preprocess
+  (pps ppx_jane)))
