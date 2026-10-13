@@ -137,9 +137,21 @@ module Timestamptz = struct
   let of_string s =
     let open Result.Let_syntax in
     let fail () = Error (sprintf "cannot read %S as timestamptz" s) in
-    match String.lsplit2 s ~on:' ' with
+    (* The server writes "2026-10-13 12:00:00.5+00"; [to_string] writes the ISO 8601 form
+       with [T] and [Z]. Both are read. *)
+    let split =
+      match String.lsplit2 s ~on:' ' with
+      | Some _ as r -> r
+      | None -> String.lsplit2 s ~on:'T'
+    in
+    match split with
     | None -> fail ()
     | Some (date_s, rest) ->
+      let rest =
+        match String.chop_suffix rest ~suffix:"Z" with
+        | Some r -> r ^ "+00"
+        | None -> rest
+      in
       (match String.lfindi rest ~f:(fun _ c -> Char.equal c '+' || Char.equal c '-') with
        | None -> fail ()
        | Some k ->
