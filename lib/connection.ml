@@ -224,7 +224,8 @@ let collect t ~timeout ~stop_at_copy_in =
     then (
       match%bind wait_fd t.fd `Read ~timeout with
       | `Ready -> loop acc
-      | (`Timeout | `Gone) as r -> return (r, List.rev acc))
+      | `Timeout -> return (`Collect_timeout, List.rev acc)
+      | `Gone -> return (`Gone, List.rev acc))
     else (
       match t.conn#get_result with
       | None -> return (`Done, List.rev acc)
@@ -354,33 +355,40 @@ and with_deadline t ~deadline ~f =
     if expired
     then return (Error (Pg_error.Timeout Time_ns.Span.zero))
     else (
-      (* On the first timeout, cancel the statement and give the server [cancel_grace] to
-         answer; if it does not, the session is abandoned. *)
-      let rec attempt ~timeout ~cancelled =
-        match%bind
-          Monitor.try_with ~extract_exn:true (fun () -> f ~timeout:(timeout_of timeout))
-        with
+      (* A deadline passing while results are awaited cancels the statement and gives the
+         server [cancel_grace] to answer; if it does not, or if the deadline passes while
+         still sending, the session is abandoned. *)
+      let finish ~cancelled = function
         | Error exn -> return (lost t exn)
         | Ok (`Gone, _) ->
           (match t.state with
            | Closed -> return (Error Pg_error.Closed)
            | Open -> return (lost t (Failure "socket closed")))
-        | Ok (`Timeout, _) when cancelled ->
+        | Ok (`Timeout, _) ->
           shut_down t;
           return (Error (Pg_error.Timeout Time_ns.Span.zero))
-        | Ok (`Timeout, _) ->
-          cancel_backend t;
-          attempt
-            ~timeout:(Some (Time_ns.add (Time_ns.now ()) cancel_grace))
-            ~cancelled:true
         | Ok (`Done, results) ->
-          let r = interpret t results in
-          (match r with
+          (match interpret t results with
            | Error (Pg_error.Server { sqlstate = "57014"; _ }) when cancelled ->
              return (Error (Pg_error.Timeout Time_ns.Span.zero))
            | r -> return r)
       in
-      attempt ~timeout:deadline ~cancelled:false)
+      match%bind
+        Monitor.try_with ~extract_exn:true (fun () -> f ~timeout:(timeout_of deadline))
+      with
+      | Ok (`Collect_timeout, earlier) ->
+        cancel_backend t;
+        let grace = Clock_ns.after cancel_grace in
+        let%bind r =
+          Monitor.try_with ~extract_exn:true (fun () ->
+            match%map collect t ~timeout:grace ~stop_at_copy_in:false with
+            | `Collect_timeout, _ -> `Timeout, []
+            | ((`Done | `Gone) as r), later -> r, earlier @ later)
+        in
+        finish ~cancelled:true r
+      | Ok (((`Done | `Gone | `Timeout) as r), results) ->
+        finish ~cancelled:false (Ok (r, results))
+      | Error _ as e -> finish ~cancelled:false e)
 
 and run_exec t ~sql ~param_types ~params ~deadline ~label:_ =
   let params = Array.map params ~f:(Option.value ~default:Postgresql.null) in
@@ -465,7 +473,7 @@ module Private = struct
             | (`Timeout | `Gone) as r -> return (r, [])
             | `Done ->
               (match%bind collect t ~timeout ~stop_at_copy_in:true with
-               | ((`Timeout | `Gone), _) as r -> return r
+               | ((`Collect_timeout | `Gone), _) as r -> return r
                | `Done, results ->
                  (match List.last results with
                   | Some r when Poly.equal r#status Postgresql.Copy_in ->
