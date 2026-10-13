@@ -232,3 +232,23 @@ let%expect_test "server notices do not stall the connection" =
     [%expect {| (Ok 0) |}];
     return ())
 ;;
+
+let%expect_test "server version matches the server's own report" =
+  with_conn (fun conn ->
+    let%bind num =
+      Query.fetch_one
+        conn
+        "SELECT current_setting('server_version_num')::int8"
+        ~row:(Row.nth 0 Type.int)
+      >>| ok
+    in
+    print_s
+      [%sexp
+        (num = Connection.server_version_num conn : bool)
+        , (String.is_prefix
+             (Connection.server_version conn)
+             ~prefix:(Int.to_string (num / 10_000) ^ ".")
+           : bool)];
+    [%expect {| (true true) |}];
+    return ())
+;;

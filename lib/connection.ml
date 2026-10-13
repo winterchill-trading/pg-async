@@ -21,7 +21,7 @@ type t =
   ; metrics : Metrics.t option
   ; sequencer : unit Throttle.Sequencer.t
   ; backend_pid : int
-  ; server_version : int * int * int
+  ; server_version_num : int
   ; mutable state : state
   ; closed : unit Ivar.t
   ; mutable in_transaction : bool
@@ -32,7 +32,15 @@ type t =
 let config t = t.config
 let metrics t = t.metrics
 let backend_pid t = t.backend_pid
-let server_version t = t.server_version
+let server_version_num t = t.server_version_num
+
+let server_version t =
+  let v = t.server_version_num in
+  if v >= 100_000
+  then sprintf "%d.%d" (v / 10_000) (v % 10_000)
+  else sprintf "%d.%d.%d" (v / 10_000) (v / 100 % 100) (v % 100)
+;;
+
 let in_transaction t = t.in_transaction
 let closed t = Ivar.read t.closed
 
@@ -279,13 +287,16 @@ let rec connect ?metrics (config : Config.t) =
          let descr = conn#socket_descr in
          ( Fd.create (Socket `Active) descr (Info.of_string "pg-async")
          , conn#backend_pid
-         , conn#server_version ))
+         , (* The bindings split PQserverVersion as major.minor.revision, two digits each,
+              the pre-10 scheme; join it back into the number. *)
+           let a, b, c = conn#server_version in
+           (a * 10_000) + (b * 100) + c ))
      with
      | Error exn ->
        (try conn#finish with
         | _ -> ());
        return (Error (Pg_error.Connect (describe_exn exn)))
-     | Ok (fd, backend_pid, server_version) ->
+     | Ok (fd, backend_pid, server_version_num) ->
        let t =
          { conn
          ; fd
@@ -293,7 +304,7 @@ let rec connect ?metrics (config : Config.t) =
          ; metrics
          ; sequencer = Throttle.Sequencer.create ()
          ; backend_pid
-         ; server_version
+         ; server_version_num
          ; state = Open
          ; closed = Ivar.create ()
          ; in_transaction = false

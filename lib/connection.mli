@@ -32,8 +32,11 @@ val config : t -> Config.t
 val metrics : t -> Metrics.t option
 val backend_pid : t -> int
 
-(** [(major, minor, revision)], e.g. [(18, 0, 0)]. *)
-val server_version : t -> int * int * int
+(** [PQserverVersion], e.g. [180003] for 18.3 and [90624] for 9.6.24. *)
+val server_version_num : t -> int
+
+(** Human form, e.g. ["18.3"]. *)
+val server_version : t -> string
 
 (** Whether the last statement left the session inside a transaction block, tracked from
     command tags ([BEGIN], [COMMIT], [ROLLBACK]). The pool rolls back a connection
