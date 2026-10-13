@@ -1,0 +1,6 @@
+(library
+ (name pg_async)
+ (public_name pg-async)
+ (libraries core core_unix async postgresql yojson uri)
+ (preprocess
+  (pps ppx_jane)))
