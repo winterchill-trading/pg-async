@@ -1,0 +1,11 @@
+(executable
+ (name pg_async_bench)
+ (libraries
+  pg-async
+  pg-async.testing
+  postgresql
+  core
+  core_unix.command_unix
+  async)
+ (preprocess
+  (pps ppx_jane)))
