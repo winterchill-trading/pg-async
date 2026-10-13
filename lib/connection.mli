@@ -74,10 +74,13 @@ module Private : sig
     -> (Postgresql.result, Pg_error.t) Result.t Deferred.t
 
   (** Send [sql] (a [COPY ... FROM STDIN]), stream every chunk of [data] as copy data, end
-      the copy and return the number of rows the server reports. *)
+      the copy and return the number of rows the server reports. If [abort ()] returns a
+      message once [data] is exhausted, the copy ends with that error and the server
+      discards every row. *)
   val copy_in
     :  ?label:string
     -> ?timeout:Time_ns.Span.t
+    -> ?abort:(unit -> string option)
     -> t
     -> sql:string
     -> data:string Pipe.Reader.t

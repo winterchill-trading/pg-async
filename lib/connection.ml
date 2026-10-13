@@ -464,7 +464,7 @@ module Private = struct
       run_exec t ~sql ~param_types ~params ~deadline ~label:None)
   ;;
 
-  let copy_in ?label ?timeout t ~sql ~data =
+  let copy_in ?label ?timeout ?(abort = fun () -> None) t ~sql ~data =
     let%map r =
       submit ?label ?timeout t ~f:(fun ~deadline ->
         let error = ref None in
@@ -493,6 +493,7 @@ module Private = struct
                     (match%bind send () with
                      | (`Timeout | `Gone) as r -> return (r, [])
                      | `Done ->
+                       if Option.is_none !error then error := abort ();
                        let rec finish () =
                          match t.conn#put_copy_end ?error_msg:!error () with
                          | Put_copy_queued -> flush_all t ~timeout
