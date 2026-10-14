@@ -32,8 +32,8 @@ val rollback : Connection.t -> (unit, Pg_error.t) Result.t Deferred.t
     reported here as SQLSTATE 25P02. *)
 val commit : Connection.t -> (unit, Pg_error.t) Result.t Deferred.t
 
-(** 10 ms doubling per attempt, capped at 1 s, each scaled by a random factor in
-    [0.5, 1.5). *)
+(** 10 ms doubling per attempt, capped at 1 s, each scaled by a random factor from
+    0.5 (inclusive) to 1.5 (exclusive). *)
 val default_backoff : attempt:int -> Time_ns.Span.t
 
 (** Run [f] in a transaction, retrying serialization failures and deadlocks (see above). *)
