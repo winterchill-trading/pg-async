@@ -18,8 +18,8 @@ Non-blocking PostgreSQL access for Async on OxCaml, over libpq.
   free port).
 - `pg-async` CLI: `check`, `migrate`, `status`, `query`.
 
-The library is generic: no application types. It is meant for application state
-(neobank-api first, hl-copy-api later).
+The library has no application types and no opinion about schema layout; it is a
+client for services that keep their state in PostgreSQL and run on Async.
 
 ## Quick start
 
@@ -238,3 +238,7 @@ server to infer.
   `pg_signal_backend`).
 - `Pool` has no minimum size or maximum connection lifetime.
 - `Config.of_url` takes one host; use `extra` or `PGHOST` for multi-host lists.
+
+## Used by
+
+`neobank-api` and `hl-copy-api` in the same organisation.
