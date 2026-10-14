@@ -1,16 +1,19 @@
 # pg-async
 
-Non-blocking PostgreSQL access for Async on OxCaml, over libpq.
+Non-blocking PostgreSQL access for Async, over libpq.
 
 - `Connection`: one session driven by libpq's asynchronous API from the Async scheduler.
-- `Pool`: bounded, health-checked, with per-query timeouts.
+- `Pool`: bounded, health-checked, with an optional minimum size and maximum connection
+  lifetime.
 - `Query`, `Param`, `Row`, `Type`: parameterized statements only, typed parameters and
-  applicative row decoders whose errors name the row and column.
+  applicative row decoders whose errors name the row and column. Statements are
+  prepared once per connection and read back in the binary format when every decoded
+  column supports it.
 - `Tx`: transactions with an isolation level; `with_transaction` retries serialization
   failures (40001) and deadlocks (40P01) with backoff.
 - `Migrate`: ordered SQL migrations in one transaction, with checksums and an advisory
   lock.
-- `Listen`: LISTEN/NOTIFY into an Async pipe.
+- `Listen`: LISTEN/NOTIFY into an Async pipe, optionally reconnecting.
 - `Copy`: `COPY ... FROM STDIN` bulk loads from a pipe of rows.
 - `Metrics`: per-label query counts, errors and latency histograms, with Prometheus
   output.
@@ -92,8 +95,10 @@ server's SQLSTATE, detail, constraint and table, so callers can branch on them
 `PGPASSWORD`, `PGDATABASE`, `PGSSLMODE`, `PGSSLROOTCERT`, `PGAPPNAME`,
 `PGCONNECT_TIMEOUT`. `Config.of_url` understands `postgres://user:pass@host:port/db` with
 the query parameters `sslmode`, `sslrootcert`, `application_name`, `connect_timeout`
-(seconds), `statement_timeout` and `query_timeout` (milliseconds); others pass through to
-libpq. The password never appears in sexps or `to_string_hum`.
+(seconds), `statement_timeout` and `query_timeout` (milliseconds) and
+`statement_cache_size`; others pass through to libpq. Several hosts
+(`postgres://db1:5432,db2:5433/app`) become libpq's host and port lists, tried in order.
+The password never appears in sexps or `to_string_hum`.
 
 - **TLS is required by default**: `ssl_mode` defaults to `Verify_full` (chain and host
   name). Set `sslrootcert` for a private CA. Local development opts out explicitly with
@@ -103,6 +108,9 @@ libpq. The password never appears in sexps or `to_string_hum`.
   function also takes `?timeout`. On expiry the statement is cancelled; if the server
   does not answer within 5 s the connection is dropped.
 - `application_name` defaults to `pg-async`.
+- `statement_cache_size` (default 256) bounds the prepared statements kept per
+  connection; `0` turns preparing, and so binary results, off (needed behind PgBouncer
+  before 1.21 in transaction mode).
 - Sessions run with `TimeZone=UTC`, `DateStyle=ISO, YMD`, `bytea_output=hex`.
 
 ## Types
@@ -120,11 +128,21 @@ libpq. The password never appears in sexps or `to_string_hum`.
 | `json` / `yojson` | jsonb | `string` / `Yojson.Safe.t` |
 | `uuid`, `numeric` | uuid, numeric | `string` (exact text) |
 | `nullable t` | NULL allowed | `'a option` |
+| `interval` | interval | `Type.Interval.t` (months, days, microseconds) |
+| `ofday` | time | `Time_ns.Ofday.t` |
+| `inet`, `cidr` | inet, cidr | `Type.Inet.t` (address, prefix length) |
+| `range t` | int4range, int8range, numrange, tstzrange, daterange | `'a Type.Range.t` |
+| `with_infinity t` | timestamptz or date with `infinity` | `'a Type.Infinite.t` |
+| `nullable t` | NULL allowed | `'a option` |
 | `array t` | one-dimensional `t[]` | `'a list` |
 | `custom`, `map` | anything else | yours |
 
-Every codec has a Quickcheck round trip, both pure (encode, decode) and through the
-server (`SELECT $1`), in `test/test_type.ml`.
+Parameters are sent as text. Results of a cached statement come back in binary when
+every column the row decoder reads accepts it: all codecs above except `numeric` and
+`custom` read binary, and the binary decoder must give the same value as the text one
+(tested column by column). Every codec has a Quickcheck round trip, both pure (encode,
+decode) and through the server (`SELECT $1`, text on the first run and binary after),
+in `test/test_type.ml` and `test/test_type_extended.ml`.
 
 ## Why libpq and not pgx
 
@@ -132,7 +150,7 @@ server (`SELECT $1`), in `test/test_type.ml`.
 and does not build on the OxCaml switch. The `postgresql` bindings (5.4.0) install
 cleanly and give the whole of libpq: TLS through the system OpenSSL, SCRAM, `.pgpass`,
 service files, multi-host failover, and a non-blocking API. The cost is a C dependency
-(`libpq-dev`, or Homebrew `postgresql@18`) and the text protocol in this first version.
+(`libpq-dev`, or Homebrew `postgresql@18`).
 
 ## How it stays non-blocking
 
@@ -144,9 +162,10 @@ libpq runs in non-blocking mode and never waits on the network:
    `PQconnectPoll` then drive TCP, TLS and authentication, waiting on
    `Fd.interruptible_ready_to` between polls. `connect_timeout` bounds the handshake
    (libpq ignores it in this mode).
-2. Query: `PQsendQueryParams`, then `PQflush` until the output is written, waiting for
-   the socket to become writable (or readable, consuming input, so neither side can
-   stall the other).
+2. Query: `PQsendPrepare` the first time a statement runs on a connection, then
+   `PQsendQueryPrepared` (or `PQsendQuery` for a statement without parameters), then
+   `PQflush` until the output is written, waiting for the socket to become writable (or
+   readable, consuming input, so neither side can stall the other).
 3. Results: `PQconsumeInput`, `PQisBusy`, `PQgetResult` whenever the socket is readable,
    until `PQgetResult` returns NULL. Notifications are drained after every read.
 4. Async watches a `dup` of libpq's socket, never libpq's own descriptor: libpq closes
@@ -188,12 +207,17 @@ retries between two sessions, retry limit); pool (limit, acquire timeout, replac
 a killed backend, rollback on release, close); migrations (apply, re-apply, checksum,
 missing, out-of-order, duplicate, failure atomicity, two concurrent migrators,
 `load_dir`); LISTEN/NOTIFY (idle delivery, commit ordering, unlisten, dropped
-connection); COPY (5000 awkward rows round trip, bad data, wrong row width, missing
+connection, reconnection with re-LISTEN, close while reconnecting); prepared statements
+(binary from the second run, text-only codecs, eviction with DEALLOCATE, re-prepare
+after DDL, DEALLOCATE and DISCARD ALL); pool minimum size and lifetime; COPY (5000 awkward rows round trip, bad data, wrong row width, missing
 table); TLS modes against a cluster with a test CA (`verify-full` with right and wrong
-CA and host name, `verify-ca`, `require`, `disable`); config parsing; metrics.
+CA and host name, `verify-ca`, `require`, `disable`); config parsing including
+multi-host URLs and failover; metrics.
 
-A test run killed midway leaves its cluster running under `/tmp/pg_async_*`; stop it
-with `pg_ctl -D /tmp/pg_async_.../data stop`.
+A test run killed midway (SIGKILL skips `at_exit`) leaves its cluster running under
+`/tmp/pg_async_*`. Each cluster directory records its owner's pid, and the next
+`Pg_test.start` stops and removes clusters whose owner is gone
+(`Pg_test.reap_orphans`).
 
 ## Bench
 
@@ -202,19 +226,23 @@ with `pg_ctl -D /tmp/pg_async_.../data stop`.
 
 | Case | ops/s | us/op |
 |---|---:|---:|
-| blocking libpq `exec`, sequential (baseline) | 31 089 | 32.2 |
-| `Connection` select, sequential | 30 011 | 33.3 |
-| `Connection` select, 64 callers (queued) | 29 944 | 33.4 |
-| `Pool(1)` select, 64 callers | 29 243 | 34.2 |
-| `Pool(4)` select, 64 callers | 73 377 | 13.6 |
-| `Pool(8)` select, 64 callers | 82 575 | 12.1 |
-| `Pool(16)` select, 64 callers | 77 201 | 13.0 |
-| `Pool(8)` insert, 64 callers | 79 002 | 12.7 |
-| `Pool(8)` select by primary key, 64 callers | 77 183 | 13.0 |
-| COPY FROM STDIN (200 000 rows) | 1 162 250 rows/s | 0.9 |
+| blocking libpq `exec`, sequential (baseline, unprepared) | 31 065 | 32.2 |
+| `Connection` select, sequential | 36 246 | 27.6 |
+| `Connection` select, sequential, `statement_cache_size = 0` | 29 720 | 33.6 |
+| `Connection` select, 64 callers (queued) | 36 406 | 27.5 |
+| `Pool(1)` select, 64 callers | 34 268 | 29.2 |
+| `Pool(4)` select, 64 callers | 76 751 | 13.0 |
+| `Pool(8)` select, 64 callers | 80 078 | 12.5 |
+| `Pool(16)` select, 64 callers | 77 442 | 12.9 |
+| `Pool(8)` insert, 64 callers | 78 629 | 12.7 |
+| `Pool(8)` select by primary key, 64 callers | 79 955 | 12.5 |
+| 1000-row select (int8, text, timestamptz), binary | 2 230 649 rows/s | 0.4 |
+| 1000-row select (int8, text, timestamptz), text | 1 752 357 rows/s | 0.6 |
+| COPY FROM STDIN (200 000 rows) | 940 986 rows/s | 1.1 |
 
-The Async path costs about 1 us per statement over blocking libpq; parallelism comes
-from the pool.
+Prepared statements make a sequential select about 6 us cheaper than parsing it every
+time (and cheaper than blocking unprepared libpq); binary results decode rows about 25%
+faster. Parallelism comes from the pool.
 
 ## CLI
 
@@ -230,19 +258,42 @@ server to infer.
 
 ## Known gaps
 
-- Text format only; no binary results and no prepared-statement cache (each statement
-  is parsed by the server; fine at the rates above).
+These need a design decision or depend on something outside the library:
+
 - A query with no parameters goes through the simple protocol (the bindings switch to
-  `PQsendQuery`), so such a string may contain several statements. Use parameters for
-  any value.
-- Arrays are one-dimensional with default bounds. No codecs yet for interval, time,
-  inet, or ranges (use `Type.custom`).
-- `Time_ns` covers roughly 1823 to 2116; `infinity` timestamps are rejected.
-- `Listen` does not reconnect; the pipe closes and the caller creates a new listener.
-- Cancelling uses `pg_cancel_backend`, which needs the same role (or
-  `pg_signal_backend`).
-- `Pool` has no minimum size or maximum connection lifetime.
-- `Config.of_url` takes one host; use `extra` or `PGHOST` for multi-host lists.
+  `PQsendQuery`), so such a string may contain several statements, is not prepared and
+  returns text. Changing that would break callers that run multi-statement strings
+  through `Query`; use parameters for any value.
+- Arrays are one-dimensional with default bounds: a multi-dimensional array needs an
+  OCaml representation (nested lists cannot express PostgreSQL's rectangular arrays
+  with bounds) that has not been chosen.
+- Parameters are always sent in text; only results use the binary format.
+- `Time_ns` covers roughly 1823 to 2116, so timestamps outside it are decode errors
+  (`with_infinity` covers `infinity`).
+- Cancelling uses `pg_cancel_backend` from a second session, which needs the same role
+  (or `pg_signal_backend`): the bindings take libpq's cancel handle before the backend
+  key exists, so `PQcancel` would need a change in the bindings.
+
+## Portability
+
+The code uses no OxCaml-only syntax or modes (no `[@zero_alloc]`, `or_null`, unboxed
+types, `local_` or `let mutable`), only Jane Street's Core and Async APIs. It is built
+and tested on the OxCaml switch (`5.2.0+ox`, Jane Street `v0.18~preview`, which exist
+only in the OxCaml opam repository); a build on plain OCaml 5.2 with the v0.17 packages
+from opam-repository has not been tried yet.
+
+## Releasing
+
+Versions follow [Semantic Versioning](https://semver.org/) and are recorded only in
+`CHANGES.md` and git tags (dune-release substitutes `%%VERSION%%` from the tag). The
+flow, once the package is ready for opam:
+
+1. Move the `Unreleased` entries in `CHANGES.md` under a new version heading.
+2. `dune-release tag vX.Y.Z` to tag the commit.
+3. `dune-release distrib` to build the archive (runs the tests), then
+   `dune-release publish` for the GitHub release.
+4. `dune-release opam pkg` and `dune-release opam submit` to open the opam-repository
+   pull request.
 
 ## Used by
 
