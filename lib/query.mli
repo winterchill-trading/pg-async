@@ -2,7 +2,22 @@
 
     SQL refers to parameters as [$1], [$2], ...; values travel separately as typed
     {!Param.t}s. Every function takes [?label] (the {!Metrics} label, default ["query"])
-    and [?timeout] (overrides [Config.query_timeout]). *)
+    and [?timeout] (overrides [Config.query_timeout]).
+
+    {2 Prepared statements and binary results}
+
+    A statement with parameters is prepared on its connection the first time it runs and
+    reused afterwards (up to [Config.statement_cache_size] statements per connection,
+    least recently used evicted). Its first execution returns text; from then on, if every
+    column the {!Row.t} decodes accepts the binary format ({!Type.accepts_binary}),
+    results come back in binary, which skips parsing numbers, timestamps and hex [bytea]
+    on both ends. A cached statement that the server no longer knows, or whose result
+    shape changed after DDL, is re-prepared and retried once outside a transaction.
+
+    A statement without parameters uses the simple query protocol (text results, never
+    cached), so such a string may hold several statements. Set [statement_cache_size] to
+    [0] behind a pooler that does not support prepared statements (PgBouncer before 1.21
+    in transaction mode). *)
 
 open! Core
 open! Async

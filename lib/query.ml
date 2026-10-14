@@ -1,11 +1,12 @@
 open! Core
 open! Async
 
-let run ?label ?timeout ?(params = []) conn sql =
+let run ?label ?timeout ?(params = []) ?row conn sql =
   let encoded = List.map params ~f:Param.encode in
   Connection.Private.exec
     ?label
     ?timeout
+    ?binary_result:(Option.map row ~f:(fun row -> Row.accepts_binary row))
     conn
     ~sql
     ~param_types:(Array.of_list_map encoded ~f:fst)
@@ -18,17 +19,17 @@ let execute ?label ?timeout ?params conn sql =
 ;;
 
 let fetch_all ?label ?timeout ?params conn sql ~row =
-  let%map r = run ?label ?timeout ?params conn sql in
+  let%map r = run ?label ?timeout ?params ~row conn sql in
   Result.bind r ~f:(Row.decode_all row)
 ;;
 
 let fold ?label ?timeout ?params conn sql ~row ~init ~f =
-  let%map r = run ?label ?timeout ?params conn sql in
+  let%map r = run ?label ?timeout ?params ~row conn sql in
   Result.bind r ~f:(fun r -> Row.fold row r ~init ~f)
 ;;
 
 let fetch_opt ?label ?timeout ?params conn sql ~row =
-  let%map r = run ?label ?timeout ?params conn sql in
+  let%map r = run ?label ?timeout ?params ~row conn sql in
   Result.bind r ~f:(fun r ->
     match r#ntuples with
     | 0 -> Ok None
@@ -37,7 +38,7 @@ let fetch_opt ?label ?timeout ?params conn sql ~row =
 ;;
 
 let fetch_one ?label ?timeout ?params conn sql ~row =
-  let%map r = run ?label ?timeout ?params conn sql in
+  let%map r = run ?label ?timeout ?params ~row conn sql in
   Result.bind r ~f:(fun r ->
     match r#ntuples with
     | 1 -> Row.decode_row row r 0
