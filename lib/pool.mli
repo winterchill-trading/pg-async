@@ -5,7 +5,14 @@
     pool shrinks: connections idle longer than [max_idle_time] are closed. A connection
     idle longer than [health_check_after] runs [SELECT 1] before it is handed out, and
     broken connections are replaced. A connection given back inside a transaction block is
-    rolled back first. *)
+    rolled back first.
+
+    With [min_size], that many connections are opened in the background at [create] and
+    kept open through idle periods (a failed open is retried every few seconds). With
+    [max_lifetime], a connection older than that (less up to 10% per connection, so
+    connections opened together do not expire together) is closed when it is next returned
+    or found idle, and replaced if needed; this bounds how long a session keeps
+    server-side state and lets a pool follow DNS or failover changes. *)
 
 open! Core
 open! Async
@@ -15,6 +22,8 @@ type t
 val create
   :  ?metrics:Metrics.t
   -> ?max_size:int (** Default 10. *)
+  -> ?min_size:int (** Default 0. At most [max_size]. *)
+  -> ?max_lifetime:Time_ns.Span.t (** Default: no limit. *)
   -> ?acquire_timeout:Time_ns.Span.t (** Default 30 s. *)
   -> ?health_check_after:Time_ns.Span.t (** Default 30 s. *)
   -> ?max_idle_time:Time_ns.Span.t (** Default 5 min. *)
