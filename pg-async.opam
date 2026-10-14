@@ -2,7 +2,7 @@
 opam-version: "2.0"
 synopsis: "Non-blocking PostgreSQL client for Async, over libpq"
 description:
-  "pg-async drives libpq's asynchronous API from the Async scheduler, so queries, the connection handshake and TLS never block other jobs. It provides connections, a bounded, health-checked pool, typed parameters and applicative row decoders, transactions with serialization retries, ordered migrations, LISTEN/NOTIFY, COPY FROM STDIN bulk loads and Prometheus metrics. The pg-async.testing library starts throwaway PostgreSQL clusters for tests."
+  "pg-async drives libpq's asynchronous API from the Async scheduler, so queries, the connection handshake and TLS never block other jobs. It provides connections, a bounded pool with a minimum size and a maximum connection lifetime, typed parameters and applicative row decoders, a per-connection prepared-statement cache with binary results, transactions with serialization retries, ordered migrations, LISTEN/NOTIFY with reconnection, COPY FROM STDIN bulk loads and Prometheus metrics. The pg-async.testing library starts throwaway PostgreSQL clusters for tests."
 maintainer: ["hello@winterchill.xyz"]
 authors: ["WinterChill AI"]
 license: "MIT"
