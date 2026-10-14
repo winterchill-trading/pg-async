@@ -2,22 +2,23 @@
 opam-version: "2.0"
 synopsis: "Non-blocking PostgreSQL client for Async, over libpq"
 description:
-  "pg-async drives libpq's asynchronous API from the Async scheduler, so queries, the connection handshake and TLS never block other jobs. It provides connections, a bounded pool with a minimum size and a maximum connection lifetime, typed parameters and applicative row decoders, a per-connection prepared-statement cache with binary results, transactions with serialization retries, ordered migrations, LISTEN/NOTIFY with reconnection, COPY FROM STDIN bulk loads and Prometheus metrics. The pg-async.testing library starts throwaway PostgreSQL clusters for tests."
+  "pg-async drives libpq's asynchronous API from the Async scheduler, so queries, the connection handshake and TLS never block other jobs. It provides connections, a bounded pool with a minimum size and a maximum connection lifetime, typed parameters and applicative row decoders, a per-connection prepared-statement cache with binary results, transactions with serialization retries, ordered migrations, LISTEN/NOTIFY with reconnection, COPY FROM STDIN bulk loads and Prometheus metrics. The pg-async.testing library starts throwaway PostgreSQL clusters for tests. Needs libpq; built against the OxCaml compiler and Jane Street's v0.18 preview packages."
 maintainer: ["hello@winterchill.xyz"]
 authors: ["WinterChill AI"]
 license: "MIT"
 tags: ["postgresql" "database" "async" "libpq"]
 homepage: "https://github.com/winterchill-trading/pg-async"
-doc: "https://ocaml.org/p/pg-async/latest"
+doc: "https://github.com/winterchill-trading/pg-async#readme"
 bug-reports: "https://github.com/winterchill-trading/pg-async/issues"
 depends: [
-  "ocaml" {>= "5.2"}
+  "oxcaml"
+  "ocaml" {>= "5.2.0" & < "5.3~"}
   "dune" {>= "3.17"}
-  "core" {>= "v0.18~preview.130.106"}
-  "core_unix" {>= "v0.18~preview.130.106"}
-  "async" {>= "v0.18~preview.130.106"}
-  "ppx_jane" {>= "v0.18~preview.130.106"}
-  "postgresql" {>= "5.4.0"}
+  "core" {>= "v0.18~preview.130.106+341" & < "v0.19~"}
+  "core_unix" {>= "v0.18~preview.130.106+341" & < "v0.19~"}
+  "async" {>= "v0.18~preview.130.106+341" & < "v0.19~"}
+  "ppx_jane" {>= "v0.18~preview.130.106+341" & < "v0.19~"}
+  "postgresql" {>= "5.4.0" & < "6.0"}
   "uri" {>= "4.4.0"}
   "yojson" {>= "2.2.0"}
   "odoc" {with-doc}
@@ -37,3 +38,4 @@ build: [
   ]
 ]
 dev-repo: "git+https://github.com/winterchill-trading/pg-async.git"
+x-maintenance-intent: ["(latest)"]
