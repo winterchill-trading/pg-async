@@ -108,8 +108,52 @@ let parse_int ~what s =
     Or_error.error_s [%message "invalid number" (what : string) ~value:(s : string)]
 ;;
 
+(* [host[:port]], with brackets around an IPv6 literal. *)
+let split_host_port entry =
+  let host, port =
+    if String.is_prefix entry ~prefix:"["
+    then (
+      match String.lsplit2 entry ~on:']' with
+      | Some (h, rest) -> String.drop_prefix h 1, String.chop_prefix rest ~prefix:":"
+      | None -> entry, None)
+    else (
+      match String.rsplit2 entry ~on:':' with
+      | Some (h, p) -> h, Some p
+      | None -> entry, None)
+  in
+  Uri.pct_decode host, port
+;;
+
+(* libpq URLs may list several hosts ([postgres://h1:5432,h2:5433/db]), which [Uri] does
+   not parse. Take the host list out, parse the rest with the first host, and return the
+   list. *)
+let extract_hosts url =
+  match String.substr_index url ~pattern:"://" with
+  | None -> url, None
+  | Some i ->
+    let start = i + 3 in
+    let stop =
+      String.lfindi url ~pos:start ~f:(fun _ c -> Char.equal c '/' || Char.equal c '?')
+      |> Option.value ~default:(String.length url)
+    in
+    let authority = String.sub url ~pos:start ~len:(stop - start) in
+    let userinfo, hosts =
+      match String.rsplit2 authority ~on:'@' with
+      | Some (u, h) -> u ^ "@", h
+      | None -> "", authority
+    in
+    if not (String.mem hosts ',')
+    then url, None
+    else (
+      let entries = String.split hosts ~on:',' in
+      let first = List.hd_exn entries in
+      ( String.prefix url start ^ userinfo ^ first ^ String.drop_prefix url stop
+      , Some (List.map entries ~f:split_host_port) ))
+;;
+
 let of_url url =
   let open Or_error.Let_syntax in
+  let url, hosts = extract_hosts url in
   let uri = Uri.of_string url in
   let%bind () =
     match Uri.scheme uri with
@@ -126,10 +170,29 @@ let of_url url =
     | Some db -> Some (Uri.pct_decode db)
   in
   let host = Uri.host uri |> Option.map ~f:Uri.pct_decode |> nonempty in
+  (* Several hosts: libpq takes comma-separated [host] and [port] lists, a port per host
+     (an empty entry means the default). *)
+  let%bind host, port, extra =
+    match hosts with
+    | None -> Ok (host, Uri.port uri, [])
+    | Some hosts ->
+      let%map ports =
+        List.map hosts ~f:(fun (_, port) ->
+          match port with
+          | None | Some "" -> Ok ""
+          | Some p -> parse_int ~what:"port" p >>| Int.to_string)
+        |> Or_error.all
+      in
+      let host = String.concat ~sep:"," (List.map hosts ~f:fst) in
+      if List.for_all ports ~f:String.is_empty
+      then Some host, None, []
+      else Some host, None, [ "port", String.concat ~sep:"," ports ]
+  in
   let t =
     create
       ?host
-      ?port:(Uri.port uri)
+      ?port
+      ~extra
       ?user:(Uri.user uri |> Option.map ~f:Uri.pct_decode |> nonempty)
       ?password:(Uri.password uri |> Option.map ~f:Uri.pct_decode |> nonempty)
       ?dbname
@@ -235,12 +298,24 @@ let to_string_hum t =
     | Some u, None -> u ^ "@"
     | Some u, Some _ -> u ^ ":***@"
   in
-  let port = Option.value_map t.port ~default:"" ~f:(fun p -> ":" ^ Int.to_string p) in
+  let hosts =
+    let host = Option.value t.host ~default:"" in
+    match t.port, List.Assoc.find t.extra "port" ~equal:String.equal with
+    | Some p, _ -> host ^ ":" ^ Int.to_string p
+    | None, None -> host
+    | None, Some ports ->
+      (match List.zip (String.split host ~on:',') (String.split ports ~on:',') with
+       | Ok pairs ->
+         List.map pairs ~f:(fun (h, p) ->
+           let h = if String.mem h ':' then "[" ^ h ^ "]" else h in
+           if String.is_empty p then h else h ^ ":" ^ p)
+         |> String.concat ~sep:","
+       | Unequal_lengths -> host)
+  in
   sprintf
-    "postgres://%s%s%s/%s?sslmode=%s&application_name=%s"
+    "postgres://%s%s/%s?sslmode=%s&application_name=%s"
     user
-    (Option.value t.host ~default:"")
-    port
+    hosts
     (Option.value t.dbname ~default:"")
     (Ssl_mode.to_string t.ssl_mode)
     t.application_name

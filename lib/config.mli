@@ -72,7 +72,9 @@ val create
     parameters: [sslmode], [sslrootcert], [application_name], [connect_timeout] (seconds),
     [statement_timeout] and [query_timeout] (milliseconds) and [statement_cache_size]; the
     rest go to [extra]. A host starting with [/] (percent-encoded as [%2F]) is a socket
-    directory. Without [sslmode] the URL gets the [Verify_full] default. *)
+    directory. Several hosts ([postgres://h1:5432,h2:5433/db], IPv6 literals in brackets)
+    become libpq's comma-separated [host] and [port] lists, tried in order. Without
+    [sslmode] the URL gets the [Verify_full] default. *)
 val of_url : string -> t Or_error.t
 
 (** [DATABASE_URL] when set, otherwise [PGHOST], [PGPORT], [PGUSER], [PGPASSWORD],
