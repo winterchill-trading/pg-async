@@ -31,7 +31,7 @@ opam exec --switch 5.2.0+ox -- dune build --root .. @pg-async/doc
 ```
 
 For parallel work, give each agent its own build directory, for example
-`DUNE_BUILD_DIR=../_build-pg-async-<task>`, so the shared dune lock is not contended.
+`DUNE_BUILD_DIR=_build-pg-async-<task>`, so the shared dune lock is not contended.
 
 Standalone (outside the workspace): add the organisation opam repository
 (`opam repo add winterchill https://github.com/winterchill-trading/opam-repository.git`),
