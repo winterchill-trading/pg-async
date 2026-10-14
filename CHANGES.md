@@ -6,6 +6,36 @@ All notable changes to this project are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- Per-connection prepared-statement cache (`Config.statement_cache_size`, default 256,
+  least recently used evicted and deallocated). Statements that the server dropped or
+  whose result shape changed after DDL are prepared again and retried once outside a
+  transaction. `Connection.prepared_statements` reports the cache size.
+- Binary results for cached statements when every decoded column supports it, with
+  binary decoders for the built-in codecs (`Type.accepts_binary`,
+  `Type.decode_binary`, `Row.accepts_binary`).
+- Codecs for `interval` (`Type.Interval`), `time` (`Type.ofday`), `inet` and `cidr`
+  (`Type.Inet`), ranges over int4, int8, numeric, timestamptz and date (`Type.Range`,
+  `Type.range`), and `infinity` timestamps and dates (`Type.with_infinity`), with
+  matching `Param` and `Row` shortcuts.
+- `Pool.create ?min_size ?max_lifetime`: connections opened up front and kept through
+  idle periods; connections past their lifetime replaced.
+- `Listen.create ?reconnect ?backoff ?on_reconnect`: a listener that opens a new session
+  after a dropped one and listens to the same channels again; `Listen.channels` and
+  `Listen.reconnects`.
+- `Config.of_url` accepts several hosts (`postgres://h1:5432,h2:5433/db`).
+- `Connection.connected_at`.
+- `Pg_test.reap_orphans`, run by `Pg_test.start`: clusters left by killed test
+  processes are stopped and removed.
+
+### Changed
+
+- `Config.t` has a new field, `statement_cache_size`; code that builds the record
+  literally must set it (`Config.create` and `{ c with ... }` are unaffected).
+- Queries with parameters now run as prepared statements, so a server behind a pooler
+  without prepared-statement support needs `statement_cache_size = 0`.
+
 ## 0.1.0
 
 First release.
