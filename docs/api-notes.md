@@ -41,6 +41,46 @@ server (macOS Homebrew) and the Ubuntu packages in CI.
 - `#error_field` returns "" for absent fields. `SEVERITY_NONLOCALIZED` is stable across
   locales.
 
+## Prepared statements and binary results
+
+- `#send_prepare ~param_types name sql`, collect its result, then
+  `#send_query_prepared ~params ~binary_result name`. Without pipeline mode each step
+  is one round trip; a statement is prepared once per session.
+- The result description (column names, `#ftype_oid`) of the first execution tells
+  which columns a later execution would return; asking for binary results is all or
+  nothing per statement in libpq (`resultFormat`), so it is only done when every
+  decoded column has a binary decoder.
+- The bindings read a binary value with `PQgetlength`, so embedded NUL bytes survive.
+- Prepared statements are not transactional: a `ROLLBACK` does not drop them, and a
+  failed `Parse` inside a transaction aborts the transaction like any other error.
+- A cached statement over a table that changed shape fails with `0A000` "cached plan
+  must not change result type"; a statement dropped by `DEALLOCATE` fails with `26000`.
+  `DISCARD ALL` and `DEALLOCATE ALL` report themselves in the command tag.
+- Binary formats used: integers and floats big-endian; `timestamptz` int64
+  microseconds and `date` int32 days from 2000-01-01, with the extreme values meaning
+  `infinity`/`-infinity`; `interval` int64 microseconds, int32 days, int32 months;
+  `time` int64 microseconds; `uuid` 16 bytes; `jsonb` a version byte (1) then text;
+  `inet`/`cidr` family (2 IPv4, 3 IPv6), prefix bits, is-cidr flag, length, address;
+  arrays as dimensions, has-null flag, element OID, then length and lower bound per
+  dimension and length-prefixed elements (-1 for NULL); ranges as a flag byte (empty,
+  lower/upper inclusive, lower/upper infinite) then length-prefixed bounds.
+- `float4` is not read in binary by the float8 codec: its text form is the shortest
+  decimal, which reads back as a different double than the single-precision value.
+
+## Values (interval, time, inet, ranges)
+
+- `interval` output follows `IntervalStyle`: `postgres` (default) prints
+  `1 year 2 mons -3 days +04:05:06.789`, `iso_8601` prints `P1Y2M-3DT4H5M6.789S`; both
+  are read. Input as `N mons N days [-]H:MM:SS.ffffff` is exact; a large
+  microsecond count may go through a double.
+- `time` accepts `24:00:00`.
+- `inet` omits a full-width prefix (`/32`, `/128`); `cidr` always prints it and rejects
+  host bits right of the prefix.
+- Discrete ranges (`int4range`, `int8range`, `daterange`) are canonicalized to
+  `[lower,upper)`, and `[3,3)` becomes `empty`. A missing bound is unbounded (printed
+  with `(` or `)`); `infinity` as a timestamp bound is a finite bound, not a missing
+  one.
+
 ## Sockets under Async
 
 - libpq closes its own socket when it sees EOF (inside `PQconsumeInput`). If Async
