@@ -1,0 +1,7 @@
+; Examples are built with the rest of the project (and so in CI) but not installed.
+
+(executable
+ (name quick_start)
+ (libraries pg-async core core_unix.command_unix async)
+ (preprocess
+  (pps ppx_jane)))

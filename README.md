@@ -68,7 +68,12 @@ let main () =
   let pool = Pool.create ~max_size:8 config in
   let%bind () =
     match%map register pool "a@example.com" with
-    | Ok user -> printf "created %d\n" user.id
+    | Ok user ->
+      printf
+        "created %d for %s at %s\n"
+        user.id
+        user.email
+        (Time_ns.to_string_utc user.created_at)
     | Error e when Pg_error.is_unique_violation e -> print_endline "already registered"
     | Error e -> Error.raise (Pg_error.to_error e)
   in
@@ -76,7 +81,7 @@ let main () =
 ;;
 ```
 
-(Compiled as `test/readme_example.ml`.) Every call returns `('a, Pg_error.t) Result.t Deferred.t`. `Pg_error.t` keeps the
+(Built in CI as `examples/quick_start.ml`.) Every call returns `('a, Pg_error.t) Result.t Deferred.t`. `Pg_error.t` keeps the
 server's SQLSTATE, detail, constraint and table, so callers can branch on them
 (`Pg_error.sqlstate`, `is_unique_violation`, `is_retryable_transaction_failure`);
 `Pg_error.to_error` / `to_or_error` convert to `Or_error`.
