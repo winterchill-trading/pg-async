@@ -84,18 +84,19 @@ let main () =
 ;;
 ```
 
-(Built in CI as `examples/quick_start.ml`.) Every call returns `('a, Pg_error.t) Result.t Deferred.t`. `Pg_error.t` keeps the
-server's SQLSTATE, detail, constraint and table, so callers can branch on them
-(`Pg_error.sqlstate`, `is_unique_violation`, `is_retryable_transaction_failure`);
-`Pg_error.to_error` / `to_or_error` convert to `Or_error`.
+(Built in CI as `examples/quick_start.ml`.) Every call returns `('a, Pg_error.t)
+Result.t Deferred.t`. `Pg_error.t` keeps the server's SQLSTATE, detail, constraint and
+table, so callers can branch on them (`Pg_error.sqlstate`, `is_unique_violation`,
+`is_retryable_transaction_failure`); `Pg_error.to_error` / `to_or_error` convert to
+`Or_error`.
 
 ## Settings
 
 `Config.of_env` reads `DATABASE_URL` when set, otherwise `PGHOST`, `PGPORT`, `PGUSER`,
 `PGPASSWORD`, `PGDATABASE`, `PGSSLMODE`, `PGSSLROOTCERT`, `PGAPPNAME`,
-`PGCONNECT_TIMEOUT`. `Config.of_url` understands `postgres://user:pass@host:port/db` with
-the query parameters `sslmode`, `sslrootcert`, `application_name`, `connect_timeout`
-(seconds), `statement_timeout` and `query_timeout` (milliseconds) and
+`PGCONNECT_TIMEOUT`. `Config.of_url` understands `postgres://user:pass@host:port/db`
+with the query parameters `sslmode`, `sslrootcert`, `application_name`,
+`connect_timeout` (seconds), `statement_timeout` and `query_timeout` (milliseconds) and
 `statement_cache_size`; others pass through to libpq. Several hosts
 (`postgres://db1:5432,db2:5433/app`) become libpq's host and port lists, tried in order.
 The password never appears in sexps or `to_string_hum`.
@@ -209,10 +210,11 @@ missing, out-of-order, duplicate, failure atomicity, two concurrent migrators,
 `load_dir`); LISTEN/NOTIFY (idle delivery, commit ordering, unlisten, dropped
 connection, reconnection with re-LISTEN, close while reconnecting); prepared statements
 (binary from the second run, text-only codecs, eviction with DEALLOCATE, re-prepare
-after DDL, DEALLOCATE and DISCARD ALL); pool minimum size and lifetime; COPY (5000 awkward rows round trip, bad data, wrong row width, missing
-table); TLS modes against a cluster with a test CA (`verify-full` with right and wrong
-CA and host name, `verify-ca`, `require`, `disable`); config parsing including
-multi-host URLs and failover; metrics.
+after DDL, DEALLOCATE and DISCARD ALL); pool minimum size and lifetime; COPY (5000
+awkward rows round trip, bad data, wrong row width, missing table); TLS modes against a
+cluster with a test CA (`verify-full` with right and wrong CA and host name,
+`verify-ca`, `require`, `disable`); config parsing including multi-host URLs and
+failover; metrics.
 
 A test run killed midway (SIGKILL skips `at_exit`) leaves its cluster running under
 `/tmp/pg_async_*`. Each cluster directory records its owner's pid, and the next
