@@ -81,6 +81,16 @@ let main ~n ~copy_rows =
         Deferred.List.iter ~how:`Sequential (List.init n ~f:Fn.id) ~f:(select_one conn))
     in
     report "Connection select, sequential" ~ops:n ~elapsed;
+    let uncached = { config with statement_cache_size = 0 } in
+    let%bind conn_uncached = Connection.connect uncached >>| ok in
+    let%bind elapsed =
+      timed (fun () ->
+        Deferred.List.iter
+          ~how:`Sequential
+          (List.init n ~f:Fn.id)
+          ~f:(select_one conn_uncached))
+    in
+    report "Connection select, sequential, no stmt cache" ~ops:n ~elapsed;
     let%bind elapsed =
       timed (fun () -> run_concurrently ~n ~concurrency:64 (select_one conn))
     in
@@ -127,6 +137,38 @@ let main ~n ~copy_rows =
     in
     report "Pool(8) select by primary key, 64 callers" ~ops:n ~elapsed;
     let%bind () = Pool.close pool in
+    (* Decoding cost: 1000 rows of (int8, text, timestamptz) per statement; binary once
+       the statement is cached, text without the cache. *)
+    let wide_row =
+      Row.Let_syntax.(
+        let%map_open id = nth 0 int
+        and name = nth 1 string
+        and at = nth 2 time_ns in
+        id, name, at)
+    in
+    let fetch_wide conn =
+      Query.fetch_all
+        conn
+        "SELECT id, name, at FROM item WHERE id < $1 ORDER BY id"
+        ~params:[ Param.int 1000 ]
+        ~row:wide_row
+      >>| ok
+      >>| fun (_ : (int * string * Time_ns.t) list) -> ()
+    in
+    let wide_n = Int.max 1 (n / 50) in
+    let%bind elapsed =
+      timed (fun () ->
+        Deferred.List.iter ~how:`Sequential (List.init wide_n ~f:Fn.id) ~f:(fun _ ->
+          fetch_wide conn))
+    in
+    report "1000-row select, binary results (rows)" ~ops:(wide_n * 1000) ~elapsed;
+    let%bind elapsed =
+      timed (fun () ->
+        Deferred.List.iter ~how:`Sequential (List.init wide_n ~f:Fn.id) ~f:(fun _ ->
+          fetch_wide conn_uncached))
+    in
+    report "1000-row select, text results (rows)" ~ops:(wide_n * 1000) ~elapsed;
+    let%bind () = Connection.close conn_uncached in
     let%bind elapsed =
       timed (fun () ->
         let rows =
