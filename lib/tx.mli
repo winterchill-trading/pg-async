@@ -17,12 +17,15 @@ module Isolation : sig
   [@@deriving sexp, compare, equal, enumerate]
 end
 
+(** [BEGIN], with an isolation level ([Read_committed] by default) and access mode. Prefer
+    {!with_transaction}. *)
 val begin_
   :  ?isolation:Isolation.t
   -> ?read_only:bool
   -> Connection.t
   -> (unit, Pg_error.t) Result.t Deferred.t
 
+(** [ROLLBACK]. *)
 val rollback : Connection.t -> (unit, Pg_error.t) Result.t Deferred.t
 
 (** [COMMIT]. A transaction in which a statement failed is rolled back by the server and
@@ -33,6 +36,7 @@ val commit : Connection.t -> (unit, Pg_error.t) Result.t Deferred.t
     [0.5, 1.5). *)
 val default_backoff : attempt:int -> Time_ns.Span.t
 
+(** Run [f] in a transaction, retrying serialization failures and deadlocks (see above). *)
 val with_transaction
   :  ?isolation:Isolation.t
   -> ?read_only:bool

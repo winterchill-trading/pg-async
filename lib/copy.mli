@@ -20,6 +20,7 @@ val from_pipe
   -> Param.t list Pipe.Reader.t
   -> (int, Pg_error.t) Result.t Deferred.t
 
+(** {!from_pipe} over a list of rows. *)
 val from_list
   :  ?label:string
   -> ?timeout:Time_ns.Span.t

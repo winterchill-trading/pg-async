@@ -34,6 +34,7 @@ val execute
   -> string
   -> int result
 
+(** Every row, in order. *)
 val fetch_all
   :  ?label:string
   -> ?timeout:Time_ns.Span.t
@@ -63,6 +64,7 @@ val fetch_opt
   -> row:'a Row.t
   -> 'a option result
 
+(** Fold over the rows without building a list. *)
 val fold
   :  ?label:string
   -> ?timeout:Time_ns.Span.t

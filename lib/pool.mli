@@ -30,6 +30,7 @@ val create
   -> Config.t
   -> t
 
+(** The settings each connection is opened with. *)
 val config : t -> Config.t
 
 (** Borrow a connection for the duration of [f]. *)
@@ -97,6 +98,7 @@ module Stats : sig
   [@@deriving sexp_of]
 end
 
+(** Current counts. *)
 val stats : t -> Stats.t
 
 (** Close idle connections now and the rest as they are returned; waiting and later

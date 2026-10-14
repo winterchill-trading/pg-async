@@ -23,13 +23,19 @@ val connect : ?metrics:Metrics.t -> Config.t -> (t, Pg_error.t) Result.t Deferre
 (** Idempotent. Pending calls return [Closed]. *)
 val close : t -> unit Deferred.t
 
+(** Whether the connection was closed or failed. *)
 val is_closed : t -> bool
 
 (** Becomes determined once the connection is closed, by [close] or by a failure. *)
 val closed : t -> unit Deferred.t
 
+(** The settings the connection was opened with. *)
 val config : t -> Config.t
+
+(** The metrics the connection records into, if any. *)
 val metrics : t -> Metrics.t option
+
+(** The server process serving this session ([pg_backend_pid()]). *)
 val backend_pid : t -> int
 
 (** When the session was established. *)
@@ -109,5 +115,6 @@ module Private : sig
       traffic. Stops when the connection closes. *)
   val start_idle_watch : t -> unit
 
+  (** The error fields of a failed result. *)
   val server_error_of_result : Postgresql.result -> Pg_error.Server_error.t
 end

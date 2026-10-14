@@ -31,6 +31,7 @@ val create
     and [Ok ()] returned. *)
 val listen : t -> string -> (unit, Pg_error.t) Result.t Deferred.t
 
+(** Stop listening to a channel. *)
 val unlisten : t -> string -> (unit, Pg_error.t) Result.t Deferred.t
 
 (** The channels listened to, sorted. *)
