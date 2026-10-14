@@ -8,7 +8,12 @@
 
     Server binaries are found through [PG_BINDIR], then [pg_config --bindir], then the
     usual install locations (Homebrew [postgresql@18], Debian/Ubuntu
-    [/usr/lib/postgresql/<version>/bin]). [initdb] refuses to run as root. *)
+    [/usr/lib/postgresql/<version>/bin]). [initdb] refuses to run as root.
+
+    A test process killed before it could stop its cluster (SIGKILL skips [at_exit])
+    leaves the server running. Every cluster directory records the pid of the process that
+    started it, and {!start} first stops and removes clusters under [/tmp] whose owner is
+    gone ({!reap_orphans}). *)
 
 open! Core
 open! Async
@@ -33,6 +38,11 @@ val start
   -> t Or_error.t Deferred.t
 
 val stop : t -> unit Deferred.t
+
+(** Stop and remove the clusters in [in_dir] (default [/tmp]) whose owning process no
+    longer exists; returns their directories. Directories without an owner record are left
+    alone. *)
+val reap_orphans : ?in_dir:string -> ?bindir:string -> unit -> string list Deferred.t
 
 val with_temp_cluster
   :  ?server_options:(string * string) list

@@ -81,11 +81,69 @@ let run_tool ~bindir prog args =
   |> Deferred.Or_error.map ~f:(ignore : string -> unit)
 ;;
 
+(* Each cluster directory records the pid of the process that started it. A test runner
+   killed with SIGKILL never runs [at_exit], so its cluster keeps running; the next
+   [start] finds directories whose owner is gone and stops and removes them. *)
+let owner_file dir = dir ^/ "owner.pid"
+let temp_prefixes = [ "pg_async_"; "pg-async-" ]
+
+let process_alive pid =
+  match Signal_unix.send Signal.zero (`Pid (Pid.of_int pid)) with
+  | `Ok -> true
+  | `No_such_process -> false
+  | exception _ -> true (* EPERM: alive, owned by someone else *)
+;;
+
+let reap_orphans ?(in_dir = "/tmp") ?bindir () =
+  let%bind entries =
+    match%map Monitor.try_with (fun () -> Sys.readdir in_dir) with
+    | Ok entries -> Array.to_list entries
+    | Error _ -> []
+  in
+  let candidates =
+    List.filter entries ~f:(fun name ->
+      List.exists temp_prefixes ~f:(fun prefix -> String.is_prefix name ~prefix))
+  in
+  Deferred.List.filter_map ~how:`Sequential candidates ~f:(fun name ->
+    let dir = in_dir ^/ name in
+    match%bind Monitor.try_with (fun () -> Reader.file_contents (owner_file dir)) with
+    | Error _ -> return None (* no owner recorded: not ours to judge *)
+    | Ok contents ->
+      (match Int.of_string_opt (String.strip contents) with
+       | Some pid when not (process_alive pid) ->
+         let%bind bindir =
+           match bindir with
+           | Some b -> return (Some b)
+           | None -> find_bindir () >>| Result.ok
+         in
+         let%bind () =
+           match bindir with
+           | None -> return ()
+           | Some bindir ->
+             Process.run
+               ~prog:(bindir ^/ "pg_ctl")
+               ~args:[ "-D"; dir ^/ "data"; "-m"; "immediate"; "-w"; "stop" ]
+               ()
+             |> Deferred.ignore_m
+         in
+         let%map (_ : string Or_error.t) =
+           Process.run ~prog:"rm" ~args:[ "-rf"; dir ] ()
+         in
+         Some dir
+       | Some _ | None -> return None))
+;;
+
 let start_once ~bindir ~server_options ~setup_data_dir =
   let open Deferred.Or_error.Let_syntax in
   (* A short path: the Unix socket lives here and macOS caps socket paths at 104 bytes. *)
   let dir = Filename_unix.temp_dir ~in_dir:"/tmp" "pg-async-" "" in
   let data = dir ^/ "data" in
+  let%bind () =
+    Deferred.ok
+      (Writer.save
+         (owner_file dir)
+         ~contents:(Int.to_string (Pid.to_int (Core_unix.getpid ()))))
+  in
   let%bind () =
     run_tool
       ~bindir
@@ -143,6 +201,7 @@ let start ?bindir ?(server_options = []) ?(setup_data_dir = fun _ -> return ()) 
     | Some b -> return b
     | None -> find_bindir ()
   in
+  let%bind (_ : string list) = Deferred.ok (reap_orphans ~bindir ()) in
   (* The free port can be taken between probing and binding; try a few times. *)
   let rec attempt n =
     match%bind.Deferred start_once ~bindir ~server_options ~setup_data_dir with
