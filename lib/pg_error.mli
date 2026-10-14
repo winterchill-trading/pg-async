@@ -39,6 +39,7 @@ type t =
   | Protocol of string (** libpq returned something this library does not expect. *)
 [@@deriving sexp_of, compare, equal]
 
+(** The SQLSTATE of a [Server] error. *)
 val sqlstate : t -> string option
 
 (** SQLSTATE 40001 (serialization_failure) or 40P01 (deadlock_detected): the transaction
@@ -48,7 +49,10 @@ val is_retryable_transaction_failure : t -> bool
 (** SQLSTATE 23505. *)
 val is_unique_violation : t -> bool
 
+(** A human-readable [Error.t] (server errors keep all their fields). *)
 val to_error : t -> Error.t
+
+(** The value of an [Ok]; raises the {!to_error} form of an [Error]. *)
 val ok_exn : ('a, t) Result.t -> 'a
 
 (** Turn a [('a, t) Result.t] into an [Or_error.t]. *)

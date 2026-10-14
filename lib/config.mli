@@ -22,6 +22,7 @@ module Ssl_mode : sig
   (** The libpq keyword value, e.g. ["verify-full"]. *)
   val to_string : t -> string
 
+  (** Inverse of [to_string]. *)
   val of_string : string -> t Or_error.t
 end
 
@@ -46,11 +47,16 @@ type t =
   }
 [@@deriving sexp_of]
 
+(** ["pg-async"]. *)
 val default_application_name : string
 
 (** 256. *)
 val default_statement_cache_size : int
 
+(** Settings with defaults: [ssl_mode] [Verify_full], [connect_timeout] 10 s, no statement
+    or query timeout, [statement_cache_size] {!default_statement_cache_size}.
+
+    Raises if [statement_cache_size] is negative. *)
 val create
   :  ?host:string
   -> ?port:int

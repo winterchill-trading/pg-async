@@ -46,6 +46,7 @@ module Error : sig
         }
   [@@deriving sexp_of]
 
+  (** A human-readable error. *)
   val to_error : t -> Core.Error.t
 end
 

@@ -8,11 +8,13 @@ open! Core
 
 type t
 
+(** An empty set of counters. *)
 val create : unit -> t
 
 (** Upper bounds of the histogram buckets; the last bucket is unbounded. *)
 val bucket_bounds : Time_ns.Span.t list
 
+(** Count one call under [label]: its latency and whether it succeeded. *)
 val record : t -> label:string -> latency:Time_ns.Span.t -> ok:bool -> unit
 
 module Label_stats : sig
@@ -35,6 +37,7 @@ end
 (** One entry per label, sorted by label. *)
 val snapshot : t -> Label_stats.t list
 
+(** Forget every label. *)
 val reset : t -> unit
 
 (** Prometheus text exposition: [<prefix>_queries_total], [<prefix>_query_errors_total]

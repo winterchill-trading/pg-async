@@ -20,13 +20,17 @@ open! Async
 
 type t
 
+(** The TCP port the server listens on (127.0.0.1). *)
 val port : t -> int
+
+(** The cluster's data directory. *)
 val data_dir : t -> string
 
 (** Settings for a database in the cluster ([postgres] by default), TLS disabled because
     the test cluster has no certificate. *)
 val config : ?dbname:string -> ?application_name:string -> t -> Pg_async.Config.t
 
+(** The directory holding [initdb] and [pg_ctl] (see above). *)
 val find_bindir : unit -> string Or_error.t Deferred.t
 
 (** [server_options] are extra [-c name=value] settings, e.g. [("ssl", "on")]. *)
@@ -37,6 +41,7 @@ val start
   -> unit
   -> t Or_error.t Deferred.t
 
+(** Stop the server immediately and remove its directory. Idempotent. *)
 val stop : t -> unit Deferred.t
 
 (** Stop and remove the clusters in [in_dir] (default [/tmp]) whose owning process no
@@ -44,6 +49,7 @@ val stop : t -> unit Deferred.t
     alone. *)
 val reap_orphans : ?in_dir:string -> ?bindir:string -> unit -> string list Deferred.t
 
+(** {!start}, run [f], then {!stop}, even if [f] raises. *)
 val with_temp_cluster
   :  ?server_options:(string * string) list
   -> ?setup_data_dir:(string -> unit Deferred.t)
