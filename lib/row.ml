@@ -2,8 +2,17 @@ open! Core
 
 exception Decode_failed of Pg_error.t
 
-(* Given a result, resolve column positions once and return a per-row reader. *)
-type 'a t = { prepare : Postgresql.result -> int -> 'a }
+type column_ref =
+  | Name of string
+  | Index of int
+
+(* [prepare]: given a result, resolve column positions once and return a per-row reader.
+   [columns]: what the decoder reads and whether each column could come back in binary, so
+   a query can ask for binary results before it has any. *)
+type 'a t =
+  { prepare : Postgresql.result -> int -> 'a
+  ; columns : (column_ref * (oid:int -> bool)) list
+  }
 
 let fail ~row ~column message =
   raise (Decode_failed (Pg_error.Decode { row; column; message }))
@@ -11,13 +20,21 @@ let fail ~row ~column message =
 
 let read ty (r : Postgresql.result) ~index ~column row =
   let raw = if r#getisnull row index then None else Some (r#getvalue row index) in
-  match Type.decode ty raw with
+  let decoded =
+    match r#fformat index with
+    | TEXT -> Type.decode ty raw
+    | BINARY -> Type.decode_binary ty ~oid:(r#ftype_oid index) raw
+  in
+  match decoded with
   | Ok v -> v
   | Error message -> fail ~row ~column (sprintf "%s: %s" (Type.name ty) message)
 ;;
 
+let accepts ty ~oid = Type.accepts_binary ty ~oid
+
 let column name ty =
-  { prepare =
+  { columns = [ Name name, accepts ty ]
+  ; prepare =
       (fun r ->
         let index =
           match r#fnumber name with
@@ -30,7 +47,8 @@ let column name ty =
 ;;
 
 let nth index ty =
-  { prepare =
+  { columns = [ Index index, accepts ty ]
+  ; prepare =
       (fun r ->
         if index < 0 || index >= r#nfields
         then
@@ -46,10 +64,11 @@ let nth index ty =
 include Applicative.Make_using_map2 (struct
     type nonrec 'a t = 'a t
 
-    let return x = { prepare = (fun _ _ -> x) }
+    let return x = { prepare = (fun _ _ -> x); columns = [] }
 
     let map2 a b ~f =
-      { prepare =
+      { columns = a.columns @ b.columns
+      ; prepare =
           (fun r ->
             let a = a.prepare r
             and b = b.prepare r in
@@ -57,7 +76,9 @@ include Applicative.Make_using_map2 (struct
       }
     ;;
 
-    let map = `Custom (fun a ~f -> { prepare = (fun r -> Fn.compose f (a.prepare r)) })
+    let map =
+      `Custom (fun a ~f -> { a with prepare = (fun r -> Fn.compose f (a.prepare r)) })
+    ;;
   end)
 
 module Let_syntax = struct
@@ -115,3 +136,43 @@ let decode_all t r =
 ;;
 
 let decode_row t r i = guard (fun () -> t.prepare r i)
+
+(* [PQfnumber]'s rules: an exact match first, then the name case-folded unless it is
+   double-quoted. *)
+let field_number names name =
+  match Array.findi names ~f:(fun _ n -> String.equal n name) with
+  | Some (i, _) -> Some i
+  | None ->
+    let folded =
+      let b = Buffer.create (String.length name) in
+      let in_quotes = ref false in
+      let n = String.length name in
+      let i = ref 0 in
+      while !i < n do
+        let c = name.[!i] in
+        if Char.equal c '"'
+        then
+          if !in_quotes && !i + 1 < n && Char.equal name.[!i + 1] '"'
+          then (
+            Buffer.add_char b '"';
+            incr i)
+          else in_quotes := not !in_quotes
+        else Buffer.add_char b (if !in_quotes then c else Char.lowercase c);
+        incr i
+      done;
+      Buffer.contents b
+    in
+    Array.findi names ~f:(fun _ n -> String.equal n folded) |> Option.map ~f:fst
+;;
+
+let accepts_binary t ~names ~oids =
+  List.for_all t.columns ~f:(fun (column, accepts) ->
+    let index =
+      match column with
+      | Name name -> field_number names name
+      | Index i -> if i >= 0 && i < Array.length oids then Some i else None
+    in
+    match index with
+    | Some i when i < Array.length oids -> accepts ~oid:oids.(i)
+    | Some _ | None -> false)
+;;

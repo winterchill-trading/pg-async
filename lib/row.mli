@@ -59,7 +59,14 @@ module Let_syntax : sig
   end
 end
 
-(** Decode every row of a [Tuples_ok] result. *)
+(** Whether every column this decoder reads can be decoded from the binary format, given
+    the column names and type OIDs of the statement's result (known from an earlier
+    execution of the same prepared statement). Column names are matched as libpq's
+    [PQfnumber] does. *)
+val accepts_binary : _ t -> names:string array -> oids:int array -> bool
+
+(** Decode every row of a [Tuples_ok] result. Each column is read in the format the result
+    carries it in. *)
 val decode_all : 'a t -> Postgresql.result -> ('a list, Pg_error.t) Result.t
 
 (** Decode one row, by index. *)
