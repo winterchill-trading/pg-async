@@ -1190,3 +1190,53 @@ let range t =
           | _ -> None)
     }
 ;;
+
+module Infinite = struct
+  type 'a t =
+    | Neg_infinity
+    | Finite of 'a
+    | Infinity
+  [@@deriving sexp, compare, equal]
+end
+
+let with_infinity t =
+  let is_sentinel ~oid s =
+    (* The binary forms of +/-infinity: the largest and smallest int64 (timestamptz) or
+       int32 (date). *)
+    match oid, String.length s with
+    | 1184, 8 ->
+      let v = Wire.int64 s 0 in
+      if Int64.equal v Int64.max_value
+      then Some Infinite.Infinity
+      else if Int64.equal v Int64.min_value
+      then Some Neg_infinity
+      else None
+    | 1082, 4 ->
+      (match Wire.int32 s 0 with
+       | 0x7fff_ffff -> Some Infinite.Infinity
+       | -0x8000_0000 -> Some Neg_infinity
+       | _ -> None)
+    | _ -> None
+  in
+  { name = t.name
+  ; oid = t.oid
+  ; array_oid = t.array_oid
+  ; range_oid = t.range_oid
+  ; encode =
+      (function
+        | Infinite.Finite v -> t.encode v
+        | Infinity -> Some "infinity"
+        | Neg_infinity -> Some "-infinity")
+  ; decode =
+      (function
+        | Some "infinity" -> Ok Infinite.Infinity
+        | Some "-infinity" -> Ok Neg_infinity
+        | s -> Result.map (t.decode s) ~f:(fun v -> Infinite.Finite v))
+  ; binary =
+      (fun oid ->
+        Option.map (t.binary oid) ~f:(fun decode -> function
+          | Some s when Option.is_some (is_sentinel ~oid s) ->
+            Ok (Option.value_exn (is_sentinel ~oid s))
+          | s -> Result.map (decode s) ~f:(fun v -> Infinite.Finite v)))
+  }
+;;

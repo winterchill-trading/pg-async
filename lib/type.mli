@@ -146,6 +146,20 @@ end
     Raises if the element codec has no range type. *)
 val range : 'a t -> 'a Range.t t
 
+(** A value or one of PostgreSQL's [infinity] / [-infinity]. *)
+module Infinite : sig
+  type 'a t =
+    | Neg_infinity
+    | Finite of 'a
+    | Infinity
+  [@@deriving sexp, compare, equal]
+end
+
+(** Accept [infinity] and [-infinity] as well, for [timestamptz] ({!time_ns}) and [date]
+    columns, e.g. [with_infinity time_ns] for an open-ended validity column or a
+    [tstzrange] bound ([range (with_infinity time_ns)]). *)
+val with_infinity : 'a t -> 'a Infinite.t t
+
 val nullable : 'a t -> 'a option t
 
 (** One-dimensional arrays. Raises for an element codec without an array type (an array of
