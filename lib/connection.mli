@@ -53,6 +53,9 @@ val execute_script
   -> string
   -> (unit, Pg_error.t) Result.t Deferred.t
 
+(** Statements held in this connection's prepared-statement cache. *)
+val prepared_statements : t -> int
+
 module Notification : sig
   type t =
     { channel : string
@@ -66,10 +69,17 @@ end
 module Private : sig
   (** Run one parameterized statement. [params.(i) = None] is SQL NULL. A [param_types]
       entry of [0] lets the server infer the type. Returns the statement's result, whose
-      status is [Command_ok] or [Tuples_ok]. *)
+      status is [Command_ok] or [Tuples_ok].
+
+      With parameters and a non-zero [statement_cache_size], the statement is prepared
+      once per connection and reused. [binary_result] is asked, given the statement's
+      result columns from an earlier execution, whether the caller can read them all in
+      binary; if so the results come back in the binary format. Without parameters the
+      simple query protocol is used and results are text. *)
   val exec
     :  ?label:string
     -> ?timeout:Time_ns.Span.t
+    -> ?binary_result:(names:string array -> oids:int array -> bool)
     -> t
     -> sql:string
     -> param_types:int array

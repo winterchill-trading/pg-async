@@ -14,6 +14,14 @@ type state =
   | Open
   | Closed
 
+(* A statement prepared on this session. [columns] is the result description (names and
+   type OIDs) from its first execution; until then results come back as text. *)
+type statement =
+  { name : string
+  ; mutable columns : (string array * int array) option
+  ; mutable last_used : int
+  }
+
 type t =
   { conn : Postgresql.connection
   ; fd : Fd.t
@@ -27,6 +35,10 @@ type t =
   ; mutable in_transaction : bool
   ; mutable on_notification : Notification.t -> unit
   ; mutable idle_interrupt : unit Ivar.t option
+  ; statements : statement String.Table.t (* by [statement_key] *)
+  ; mutable statements_prepared : int
+  ; mutable statement_clock : int
+  ; mutable to_deallocate : string list
   }
 
 let config t = t.config
@@ -251,6 +263,10 @@ let track_transaction t (r : Postgresql.result) =
   match r#cmd_status with
   | "BEGIN" | "START TRANSACTION" | "SAVEPOINT" -> t.in_transaction <- true
   | "COMMIT" | "ROLLBACK" | "PREPARE TRANSACTION" -> t.in_transaction <- false
+  | "DISCARD ALL" | "DEALLOCATE ALL" ->
+    (* The server forgot every prepared statement. *)
+    Hashtbl.clear t.statements;
+    t.to_deallocate <- []
   | _ -> ()
 ;;
 
@@ -355,6 +371,10 @@ let rec connect ?metrics (config : Config.t) =
          ; in_transaction = false
          ; on_notification = ignore
          ; idle_interrupt = None
+         ; statements = String.Table.create ()
+         ; statements_prepared = 0
+         ; statement_clock = 0
+         ; to_deallocate = []
          }
        in
        let statement_timeout =
@@ -465,6 +485,131 @@ and run_script_unmetered t sql ~timeout =
   Result.map r ~f:(ignore : Postgresql.result -> unit)
 ;;
 
+(* The prepared-statement cache. Statements are prepared on first use under a fresh name
+   and executed with [PQsendQueryPrepared]; once a statement's result description is
+   known, later executions ask for binary results if the caller's decoder can read every
+   column in binary. *)
+
+let statement_key ~sql ~param_types =
+  String.concat ~sep:"," (List.map (Array.to_list param_types) ~f:Int.to_string)
+  ^ "\000"
+  ^ sql
+;;
+
+(* The server answers [26000] when a statement it was asked to run does not exist (a
+   [DEALLOCATE] or [DISCARD] we did not see), and [0A000] "cached plan must not change
+   result type" when a table under the statement changed shape. Either way the cached
+   statement is dropped; outside a transaction the call is retried once. *)
+let is_stale_statement = function
+  | Pg_error.Server { sqlstate = "26000"; _ } -> true
+  | Pg_error.Server { sqlstate = "0A000"; message; _ } ->
+    String.is_substring message ~substring:"cached plan"
+  | _ -> false
+;;
+
+let forget_statement t key ~deallocate =
+  match Hashtbl.find_and_remove t.statements key with
+  | None -> ()
+  | Some stmt -> if deallocate then t.to_deallocate <- stmt.name :: t.to_deallocate
+;;
+
+(* Drop evicted statements on the server. Skipped inside a transaction, where a failed
+   transaction would refuse the [DEALLOCATE]; errors are ignored (the names are unique, so
+   a leftover statement only costs server memory until the session ends). *)
+let flush_deallocations t ~deadline =
+  match t.to_deallocate with
+  | [] -> return ()
+  | names when not t.in_transaction ->
+    t.to_deallocate <- [];
+    let sql = List.map names ~f:(sprintf "DEALLOCATE %s") |> String.concat ~sep:"; " in
+    let%map (_ : (Postgresql.result, Pg_error.t) Result.t) =
+      run_exec t ~sql ~param_types:[||] ~params:[||] ~deadline ~label:None
+    in
+    ()
+  | _ -> return ()
+;;
+
+let evict_if_full t =
+  if Hashtbl.length t.statements >= t.config.statement_cache_size
+  then (
+    let victim =
+      Hashtbl.fold t.statements ~init:None ~f:(fun ~key ~data acc ->
+        match acc with
+        | Some (_, (best : statement)) when best.last_used <= data.last_used -> acc
+        | _ -> Some (key, data))
+    in
+    Option.iter victim ~f:(fun (key, _) -> forget_statement t key ~deallocate:true))
+;;
+
+let prepare t ~key ~sql ~param_types ~deadline =
+  match Hashtbl.find t.statements key with
+  | Some stmt -> return (Ok stmt)
+  | None ->
+    evict_if_full t;
+    let%bind () = flush_deallocations t ~deadline in
+    t.statements_prepared <- t.statements_prepared + 1;
+    let name = sprintf "pg_async_%d" t.statements_prepared in
+    let%map r =
+      with_deadline t ~deadline ~f:(fun ~timeout ->
+        t.conn#send_prepare ~param_types name sql;
+        match%bind flush_all t ~timeout with
+        | (`Timeout | `Gone) as r -> return (r, [])
+        | `Done -> collect t ~timeout ~stop_at_copy_in:false)
+    in
+    Result.map r ~f:(fun (_ : Postgresql.result) ->
+      let stmt = { name; columns = None; last_used = 0 } in
+      Hashtbl.set t.statements ~key ~data:stmt;
+      stmt)
+;;
+
+let describe (r : Postgresql.result) =
+  let n = r#nfields in
+  Array.init n ~f:r#fname, Array.init n ~f:r#ftype_oid
+;;
+
+let run_prepared_once t ~sql ~param_types ~params ~deadline ~binary_result =
+  let key = statement_key ~sql ~param_types in
+  match%bind prepare t ~key ~sql ~param_types ~deadline with
+  | Error _ as e -> return e
+  | Ok stmt ->
+    t.statement_clock <- t.statement_clock + 1;
+    stmt.last_used <- t.statement_clock;
+    let binary =
+      match stmt.columns, binary_result with
+      | Some (names, oids), Some accepts -> accepts ~names ~oids
+      | _ -> false
+    in
+    let params = Array.map params ~f:(Option.value ~default:Postgresql.null) in
+    let%map r =
+      with_deadline t ~deadline ~f:(fun ~timeout ->
+        t.conn#send_query_prepared ~params ~binary_result:binary stmt.name;
+        match%bind flush_all t ~timeout with
+        | (`Timeout | `Gone) as r -> return (r, [])
+        | `Done -> collect t ~timeout ~stop_at_copy_in:false)
+    in
+    (match r with
+     | Ok r -> if Option.is_none stmt.columns then stmt.columns <- Some (describe r)
+     | Error e ->
+       if is_stale_statement e
+       then
+         forget_statement
+           t
+           key
+           ~deallocate:
+             (match e with
+              | Server { sqlstate = "26000"; _ } -> false
+              | _ -> true));
+    r
+;;
+
+let run_prepared t ~sql ~param_types ~params ~deadline ~binary_result =
+  let in_transaction = t.in_transaction in
+  match%bind run_prepared_once t ~sql ~param_types ~params ~deadline ~binary_result with
+  | Error e when is_stale_statement e && not in_transaction ->
+    run_prepared_once t ~sql ~param_types ~params ~deadline ~binary_result
+  | r -> return r
+;;
+
 let interrupt_idle t = Option.iter t.idle_interrupt ~f:(fun i -> Ivar.fill_if_empty i ())
 
 (* Every public entry point: compute the deadline at call time (queueing counts), take the
@@ -514,10 +659,14 @@ let rec put_all t chunk ~pos ~timeout =
        | (`Timeout | `Gone) as r -> return r))
 ;;
 
+let prepared_statements t = Hashtbl.length t.statements
+
 module Private = struct
-  let exec ?label ?timeout t ~sql ~param_types ~params =
+  let exec ?label ?timeout ?binary_result t ~sql ~param_types ~params =
     submit ?label ?timeout t ~f:(fun ~deadline ->
-      run_exec t ~sql ~param_types ~params ~deadline ~label:None)
+      if t.config.statement_cache_size > 0 && not (Array.is_empty params)
+      then run_prepared t ~sql ~param_types ~params ~deadline ~binary_result
+      else run_exec t ~sql ~param_types ~params ~deadline ~label:None)
   ;;
 
   let copy_in ?label ?timeout ?(abort = fun () -> None) t ~sql ~data =
