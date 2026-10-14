@@ -14,13 +14,14 @@ let show r =
 let%expect_test "of_url" =
   show
     (Config.of_url
-       "postgres://app:s3cr%40t@db.internal:6432/main?sslmode=verify-ca&sslrootcert=/etc/ca.pem&application_name=api&statement_timeout=1500&query_timeout=2000&target_session_attrs=read-write");
+       "postgres://app:s3cr%40t@db.internal:6432/main?sslmode=verify-ca&sslrootcert=/etc/ca.pem&application_name=api&statement_timeout=1500&query_timeout=2000&statement_cache_size=0&target_session_attrs=read-write");
   [%expect
     {|
     ((host (db.internal)) (port (6432)) (user (app)) (password (***))
      (dbname (main)) (ssl_mode Verify_ca) (ssl_root_cert (/etc/ca.pem))
      (application_name api) (connect_timeout 10s) (statement_timeout (1.5s))
-     (query_timeout (2s)) (extra ((target_session_attrs read-write))))
+     (query_timeout (2s)) (statement_cache_size 0)
+     (extra ((target_session_attrs read-write))))
     host='db.internal' port='6432' user='app' password='s3cr@t' dbname='main' sslmode='verify-ca' sslrootcert='/etc/ca.pem' application_name='api' connect_timeout='10' target_session_attrs='read-write'
     postgres://app:***@db.internal:6432/main?sslmode=verify-ca&application_name=api
     |}];
@@ -29,7 +30,8 @@ let%expect_test "of_url" =
     {|
     ((host (/var/run/postgresql)) (port ()) (user ()) (password ()) (dbname (db))
      (ssl_mode Verify_full) (ssl_root_cert ()) (application_name pg-async)
-     (connect_timeout 10s) (statement_timeout ()) (query_timeout ()) (extra ()))
+     (connect_timeout 10s) (statement_timeout ()) (query_timeout ())
+     (statement_cache_size 256) (extra ()))
     host='/var/run/postgresql' dbname='db' sslmode='verify-full' application_name='pg-async' connect_timeout='10'
     postgres:///var/run/postgresql/db?sslmode=verify-full&application_name=pg-async
     |}];
@@ -59,7 +61,8 @@ let%expect_test "of_env" =
     {|
     ((host (localhost)) (port (5433)) (user (me)) (password (***)) (dbname (d))
      (ssl_mode Disable) (ssl_root_cert ()) (application_name worker)
-     (connect_timeout 10s) (statement_timeout ()) (query_timeout ()) (extra ()))
+     (connect_timeout 10s) (statement_timeout ()) (query_timeout ())
+     (statement_cache_size 256) (extra ()))
     host='localhost' port='5433' user='me' password='it\'s' dbname='d' sslmode='disable' application_name='worker' connect_timeout='10'
     postgres://me:***@localhost:5433/d?sslmode=disable&application_name=worker
     |}];
@@ -71,7 +74,8 @@ let%expect_test "of_env" =
     {|
     ((host (h)) (port ()) (user (u)) (password ()) (dbname (db))
      (ssl_mode Verify_full) (ssl_root_cert ()) (application_name pg-async)
-     (connect_timeout 10s) (statement_timeout ()) (query_timeout ()) (extra ()))
+     (connect_timeout 10s) (statement_timeout ()) (query_timeout ())
+     (statement_cache_size 256) (extra ()))
     host='h' user='u' dbname='db' sslmode='verify-full' application_name='pg-async' connect_timeout='10'
     postgres://u@h/db?sslmode=verify-full&application_name=pg-async
     |}];
