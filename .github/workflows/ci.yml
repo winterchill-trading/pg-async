@@ -13,6 +13,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpq-dev postgresql
       - uses: winterchill-trading/infra/.github/actions/ox-setup@main
       - run: opam exec -- dune build
+      - run: opam exec -- dune build @examples/all
       - run: opam exec -- dune test
   obj-magic:
     uses: winterchill-trading/infra/.github/workflows/obj-magic.yml@main
