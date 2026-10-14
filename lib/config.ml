@@ -38,6 +38,7 @@ type t =
   ; connect_timeout : Time_ns.Span.t
   ; statement_timeout : Time_ns.Span.t option
   ; query_timeout : Time_ns.Span.t option
+  ; statement_cache_size : int
   ; extra : (string * string) list
   }
 
@@ -54,11 +55,13 @@ let sexp_of_t t =
     ; connect_timeout : Time_ns.Span.t = t.connect_timeout
     ; statement_timeout : Time_ns.Span.t option = t.statement_timeout
     ; query_timeout : Time_ns.Span.t option = t.query_timeout
+    ; statement_cache_size : int = t.statement_cache_size
     ; extra : (string * string) list = t.extra
     }]
 ;;
 
 let default_application_name = "pg-async"
+let default_statement_cache_size = 256
 
 let create
   ?host
@@ -72,9 +75,16 @@ let create
   ?(connect_timeout = Time_ns.Span.of_int_sec 10)
   ?statement_timeout
   ?query_timeout
+  ?(statement_cache_size = default_statement_cache_size)
   ?(extra = [])
   ()
   =
+  if statement_cache_size < 0
+  then
+    raise_s
+      [%message
+        "Config.create: statement_cache_size must not be negative"
+          (statement_cache_size : int)];
   { host
   ; port
   ; user
@@ -86,6 +96,7 @@ let create
   ; connect_timeout
   ; statement_timeout
   ; query_timeout
+  ; statement_cache_size
   ; extra
   }
 ;;
@@ -141,6 +152,9 @@ let of_url url =
     | "query_timeout" ->
       let%map ms = parse_int ~what:"query_timeout" value in
       { t with query_timeout = Some (Time_ns.Span.of_int_ms ms) }
+    | "statement_cache_size" ->
+      let%map n = parse_int ~what:"statement_cache_size" value in
+      { t with statement_cache_size = n }
     | _ -> Ok { t with extra = t.extra @ [ key, value ] })
 ;;
 

@@ -39,11 +39,17 @@ type t =
   (** Server-side [statement_timeout], set for the session after connecting. *)
   ; query_timeout : Time_ns.Span.t option
   (** Default client-side deadline for each query; [None] waits forever. *)
+  ; statement_cache_size : int
+  (** Prepared statements kept per connection (least recently used evicted first); [0]
+      turns the cache off, and with it binary results. See {!Query}. *)
   ; extra : (string * string) list (** Other libpq keywords, passed through. *)
   }
 [@@deriving sexp_of]
 
 val default_application_name : string
+
+(** 256. *)
+val default_statement_cache_size : int
 
 val create
   :  ?host:string
@@ -57,15 +63,16 @@ val create
   -> ?connect_timeout:Time_ns.Span.t
   -> ?statement_timeout:Time_ns.Span.t
   -> ?query_timeout:Time_ns.Span.t
+  -> ?statement_cache_size:int
   -> ?extra:(string * string) list
   -> unit
   -> t
 
 (** Parse [postgres://user:password@host:port/dbname?sslmode=...]. Recognised query
     parameters: [sslmode], [sslrootcert], [application_name], [connect_timeout] (seconds),
-    [statement_timeout] and [query_timeout] (milliseconds); the rest go to [extra]. A host
-    starting with [/] (percent-encoded as [%2F]) is a socket directory. Without [sslmode]
-    the URL gets the [Verify_full] default. *)
+    [statement_timeout] and [query_timeout] (milliseconds) and [statement_cache_size]; the
+    rest go to [extra]. A host starting with [/] (percent-encoded as [%2F]) is a socket
+    directory. Without [sslmode] the URL gets the [Verify_full] default. *)
 val of_url : string -> t Or_error.t
 
 (** [DATABASE_URL] when set, otherwise [PGHOST], [PGPORT], [PGUSER], [PGPASSWORD],
