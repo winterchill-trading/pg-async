@@ -20,6 +20,18 @@ val encode : 'a t -> 'a -> string option
 (** [None] is SQL NULL. *)
 val decode : 'a t -> string option -> ('a, string) Result.t
 
+(** Whether a result column of type [oid] can be read in the binary format. The built-in
+    codecs read their own types in binary (plus [int2]/[int4] for the integer codecs,
+    [varchar]/[bpchar]/[name] for {!string} and [json] for {!json}/{!yojson}), arrays and
+    ranges of those, and nullable or {!map}ped versions of those; {!numeric} and {!custom}
+    codecs read text only. A query asks for binary results only when every column it
+    decodes accepts binary (see {!Query}). *)
+val accepts_binary : _ t -> oid:int -> bool
+
+(** Decode a binary-format value of a column of type [oid]. It gives the same value as
+    {!decode} on the column's text form. [None] is SQL NULL. *)
+val decode_binary : 'a t -> oid:int -> string option -> ('a, string) Result.t
+
 (** [int8]; also reads [int2] and [int4] columns. *)
 val int : int t
 
@@ -140,7 +152,8 @@ val nullable : 'a t -> 'a option t
     arrays, or a custom codec created without [array_oid]). *)
 val array : 'a t -> 'a list t
 
-(** A codec for another type. [oid] [0] lets the server infer the parameter type. *)
+(** A codec for another type, in the text format. [oid] [0] lets the server infer the
+    parameter type. *)
 val custom
   :  name:string
   -> oid:int

@@ -8,14 +8,185 @@ type 'a t =
       (* The range type over this one: its name, OID and array OID. *)
   ; encode : 'a -> string option
   ; decode : string option -> ('a, string) Result.t
+  ; binary : int -> (string option -> ('a, string) Result.t) option
+  (* The binary-format decoder for a column of this OID, if there is one. Each one must
+     give the same value as [decode] reading the text form of that column. *)
   }
+
+let null_error = Error "unexpected NULL (wrap the codec in Type.nullable)"
+
+(* Big-endian readers over binary-format values, with bounds checks. *)
+module Wire = struct
+  exception Short
+
+  let byte s pos = if pos >= String.length s then raise Short else Char.to_int s.[pos]
+
+  let uint32 s pos =
+    (byte s pos lsl 24)
+    lor (byte s (pos + 1) lsl 16)
+    lor (byte s (pos + 2) lsl 8)
+    lor byte s (pos + 3)
+  ;;
+
+  let int16 s pos =
+    let v = (byte s pos lsl 8) lor byte s (pos + 1) in
+    if v land 0x8000 <> 0 then v - 0x10000 else v
+  ;;
+
+  let int32 s pos =
+    let v = uint32 s pos in
+    if v land 0x8000_0000 <> 0 then v - 0x1_0000_0000 else v
+  ;;
+
+  let int64 s pos =
+    Int64.( lor )
+      (Int64.shift_left (Int64.of_int (uint32 s pos)) 32)
+      (Int64.of_int (uint32 s (pos + 4)))
+  ;;
+
+  let expect_length s n ~what =
+    if String.length s = n
+    then Ok ()
+    else Error (sprintf "binary %s: expected %d bytes, got %d" what n (String.length s))
+  ;;
+
+  (* Run a reader, turning a short buffer into an error. *)
+  let read ~what f =
+    match f () with
+    | r -> r
+    | exception Short -> Error (sprintf "binary %s: value too short" what)
+  ;;
+end
+
+let no_binary _ = None
+
+(* Binary-format decoders shared by several codecs. *)
+module Binary = struct
+  let int s =
+    Wire.read ~what:"integer" (fun () ->
+      match String.length s with
+      | 2 -> Ok (Wire.int16 s 0)
+      | 4 -> Ok (Wire.int32 s 0)
+      | 8 ->
+        let v = Wire.int64 s 0 in
+        (match Int64.to_int v with
+         | Some n -> Ok n
+         | None -> Error (sprintf "cannot read %Ld as a 63-bit int" v))
+      | n -> Error (sprintf "binary integer of %d bytes" n))
+  ;;
+
+  let int64 s =
+    Wire.read ~what:"integer" (fun () ->
+      match String.length s with
+      | 2 -> Ok (Int64.of_int (Wire.int16 s 0))
+      | 4 -> Ok (Int64.of_int (Wire.int32 s 0))
+      | 8 -> Ok (Wire.int64 s 0)
+      | n -> Error (sprintf "binary integer of %d bytes" n))
+  ;;
+
+  (* PostgreSQL counts timestamps in microseconds and dates in days from 2000-01-01. *)
+  let pg_epoch_us = 946_684_800_000_000
+  let pg_epoch_date = Date.create_exn ~y:2000 ~m:Jan ~d:1
+
+  let timestamptz s =
+    Result.bind (Wire.expect_length s 8 ~what:"timestamptz") ~f:(fun () ->
+      let v = Wire.int64 s 0 in
+      if Int64.equal v Int64.max_value || Int64.equal v Int64.min_value
+      then Error "timestamptz infinity has no Time_ns value"
+      else (
+        let us = Int64.to_int_exn v + pg_epoch_us in
+        if Int.abs us > Int.max_value / 1000
+        then Error (sprintf "timestamptz %Ld us is outside the Time_ns range" v)
+        else (
+          let t = Time_ns.of_int_ns_since_epoch (us * 1000) in
+          if Time_ns.( < ) t Time_ns.min_value_representable
+             || Time_ns.( > ) t Time_ns.max_value_representable
+          then Error (sprintf "timestamptz %Ld us is outside the Time_ns range" v)
+          else Ok t)))
+  ;;
+
+  let date s =
+    Result.bind (Wire.expect_length s 4 ~what:"date") ~f:(fun () ->
+      let days = Wire.int32 s 0 in
+      (* The text decoder reads four-digit years only; keep the two in step. *)
+      match Date.add_days pg_epoch_date days with
+      | d when Date.year d >= 1 && Date.year d <= 9999 -> Ok d
+      | _ | (exception _) -> Error (sprintf "date %d days from 2000-01-01" days))
+  ;;
+
+  let json ~oid s =
+    if oid = 114
+    then Ok s
+    else if String.length s >= 1 && Char.equal s.[0] '\001'
+    then Ok (String.drop_prefix s 1)
+    else Error "binary jsonb: unknown version byte"
+  ;;
+
+  let uuid s =
+    Result.bind (Wire.expect_length s 16 ~what:"uuid") ~f:(fun () ->
+      let hex = String.concat_map s ~f:(fun c -> sprintf "%02x" (Char.to_int c)) in
+      Ok
+        (sprintf
+           "%s-%s-%s-%s-%s"
+           (String.sub hex ~pos:0 ~len:8)
+           (String.sub hex ~pos:8 ~len:4)
+           (String.sub hex ~pos:12 ~len:4)
+           (String.sub hex ~pos:16 ~len:4)
+           (String.sub hex ~pos:20 ~len:12)))
+  ;;
+
+  (* One length-prefixed value at [pos] ([-1] is NULL); returns it and the next position. *)
+  let value s pos =
+    let len = Wire.int32 s pos in
+    if len < 0
+    then None, pos + 4
+    else if pos + 4 + len > String.length s
+    then raise Wire.Short
+    else Some (String.sub s ~pos:(pos + 4) ~len), pos + 4 + len
+  ;;
+
+  let array s ~element =
+    Wire.read ~what:"array" (fun () ->
+      let ndim = Wire.int32 s 0 in
+      let element_oid = Wire.uint32 s 8 in
+      match ndim, element element_oid with
+      | 0, _ -> Ok []
+      | 1, Some decode ->
+        let n = Wire.int32 s 12 in
+        let lower_bound = Wire.int32 s 16 in
+        if lower_bound <> 1
+        then Error "only one-dimensional arrays with default bounds"
+        else (
+          let rec go i pos acc =
+            if i = n
+            then Ok (List.rev acc)
+            else (
+              let v, pos = value s pos in
+              match decode v with
+              | Ok x -> go (i + 1) pos (x :: acc)
+              | Error msg -> Error (sprintf "element %d: %s" i msg))
+          in
+          go 0 20 [])
+      | 1, None -> Error (sprintf "no binary decoder for element type OID %d" element_oid)
+      | _ -> Error "nested arrays are not supported")
+  ;;
+end
 
 let name t = t.name
 let oid t = t.oid
 let encode t v = t.encode v
 let decode t s = t.decode s
+let accepts_binary t ~oid = Option.is_some (t.binary oid)
 
-let base ?range_oid ~name ~oid ~array_oid ~to_string ~of_string () =
+let decode_binary t ~oid s =
+  match t.binary oid with
+  | Some decode -> decode s
+  | None -> Error (sprintf "%s: no binary decoder for type OID %d" t.name oid)
+;;
+
+(* [binary] is the OIDs read in binary format and the decoder, which gets the column's
+   OID. *)
+let base ?range_oid ?binary ~name ~oid ~array_oid ~to_string ~of_string () =
   { name
   ; oid
   ; array_oid
@@ -23,8 +194,20 @@ let base ?range_oid ~name ~oid ~array_oid ~to_string ~of_string () =
   ; encode = (fun v -> Some (to_string v))
   ; decode =
       (function
-        | None -> Error "unexpected NULL (wrap the codec in Type.nullable)"
+        | None -> null_error
         | Some s -> of_string s)
+  ; binary =
+      (match binary with
+       | None -> no_binary
+       | Some (oids, decode) ->
+         fun column_oid ->
+           if List.mem oids column_oid ~equal:Int.equal
+           then
+             Some
+               (function
+                 | None -> null_error
+                 | Some s -> decode ~oid:column_oid s)
+           else None)
   }
 ;;
 
@@ -49,6 +232,7 @@ let int =
       match Int.of_string_opt s with
       | Some n -> Ok n
       | None -> Error (sprintf "cannot read %S as a 63-bit int" s))
+    ~binary:([ 20; 23; 21 ], fun ~oid:_ s -> Binary.int s)
     ()
 ;;
 
@@ -60,6 +244,13 @@ let int32 =
     ~array_oid:(Some 1007)
     ~to_string:Int32.to_string
     ~of_string:(parse_with ~what:"int4" Int32.of_string)
+    ~binary:
+      ( [ 23; 21 ]
+      , fun ~oid:_ s ->
+          Result.bind (Binary.int s) ~f:(fun n ->
+            match Int32.of_int n with
+            | Some n -> Ok n
+            | None -> Error (sprintf "%d does not fit int4" n)) )
     ()
 ;;
 
@@ -71,6 +262,7 @@ let int64 =
     ~array_oid:(Some 1016)
     ~to_string:Int64.to_string
     ~of_string:(parse_with ~what:"int8" Int64.of_string)
+    ~binary:([ 20; 23; 21 ], fun ~oid:_ s -> Binary.int64 s)
     ()
 ;;
 
@@ -81,6 +273,8 @@ let string =
     ~array_oid:(Some 1009)
     ~to_string:Fn.id
     ~of_string:Result.return
+      (* text, varchar, bpchar and name: the binary form is the text itself. *)
+    ~binary:([ 25; 1043; 1042; 19 ], fun ~oid:_ s -> Ok s)
     ()
 ;;
 
@@ -94,6 +288,13 @@ let bool =
       | "t" | "true" -> Ok true
       | "f" | "false" -> Ok false
       | s -> Error (sprintf "cannot read %S as bool" s))
+    ~binary:
+      ( [ 16 ]
+      , fun ~oid:_ s ->
+          match s with
+          | "\001" -> Ok true
+          | "\000" -> Ok false
+          | _ -> Error "binary bool: expected one byte 0 or 1" )
     ()
 ;;
 
@@ -115,6 +316,13 @@ let float =
         (match Float.of_string_opt s with
          | Some f -> Ok f
          | None -> Error (sprintf "cannot read %S as float8" s)))
+      (* Not float4: its text form is the shortest decimal, which reads back as a
+         different double than the binary single-precision value. *)
+    ~binary:
+      ( [ 701 ]
+      , fun ~oid:_ s ->
+          Result.bind (Wire.expect_length s 8 ~what:"float8") ~f:(fun () ->
+            Ok (Int64.float_of_bits (Wire.int64 s 0))) )
     ()
 ;;
 
@@ -212,6 +420,7 @@ let time_ns =
     ~array_oid:(Some 1185)
     ~to_string:Timestamptz.to_string
     ~of_string:Timestamptz.of_string
+    ~binary:([ 1184 ], fun ~oid:_ s -> Binary.timestamptz s)
     ()
 ;;
 
@@ -228,6 +437,7 @@ let date =
       if String.length s = 10
       then parse_with ~what:"date" Date.of_string s
       else Error (sprintf "cannot read %S as date" s))
+    ~binary:([ 1082 ], fun ~oid:_ s -> Binary.date s)
     ()
 ;;
 
@@ -267,6 +477,7 @@ let bytea =
             | _ -> Error "bad hex digit in bytea")
         in
         go 0)
+    ~binary:([ 17 ], fun ~oid:_ s -> Ok s)
     ()
 ;;
 
@@ -277,6 +488,7 @@ let json =
     ~array_oid:(Some 3807)
     ~to_string:Fn.id
     ~of_string:Result.return
+    ~binary:([ 3802; 114 ], Binary.json)
     ()
 ;;
 
@@ -290,6 +502,14 @@ let yojson =
       match Yojson.Safe.from_string s with
       | j -> Ok j
       | exception Yojson.Json_error msg -> Error (sprintf "invalid JSON: %s" msg))
+    ~binary:
+      ( [ 3802; 114 ]
+      , fun ~oid s ->
+          Result.bind (Binary.json ~oid s) ~f:(fun s ->
+            match Yojson.Safe.from_string s with
+            | j -> Ok j
+            | exception Yojson.Json_error msg -> Error (sprintf "invalid JSON: %s" msg))
+      )
     ()
 ;;
 
@@ -300,6 +520,7 @@ let uuid =
     ~array_oid:(Some 2951)
     ~to_string:Fn.id
     ~of_string:Result.return
+    ~binary:([ 2950 ], fun ~oid:_ s -> Binary.uuid s)
     ()
 ;;
 
@@ -324,6 +545,11 @@ let nullable t =
       (function
         | None -> Ok None
         | Some _ as s -> Result.map (t.decode s) ~f:Option.some)
+  ; binary =
+      (fun oid ->
+        Option.map (t.binary oid) ~f:(fun decode -> function
+          | None -> Ok None
+          | Some _ as s -> Result.map (decode s) ~f:Option.some))
   }
 ;;
 
@@ -334,6 +560,9 @@ let map t ~name ~f ~f_inv =
   ; range_oid = t.range_oid
   ; encode = (fun v -> t.encode (f_inv v))
   ; decode = (fun s -> Result.bind (t.decode s) ~f)
+  ; binary =
+      (fun oid ->
+        Option.map (t.binary oid) ~f:(fun decode s -> Result.bind (decode s) ~f))
   }
 ;;
 
@@ -445,6 +674,15 @@ let array t =
                 Result.map_error (t.decode e) ~f:(fun msg ->
                   sprintf "element %d: %s" i msg))
               |> Result.all))
+    ; binary =
+        (fun column_oid ->
+          if column_oid <> oid || Option.is_none (t.binary t.oid)
+          then None
+          else
+            Some
+              (function
+                | None -> null_error
+                | Some s -> Binary.array s ~element:t.binary))
     }
 ;;
 
@@ -604,6 +842,16 @@ let interval =
     ~array_oid:(Some 1187)
     ~to_string:Interval.to_string
     ~of_string:Interval.of_string
+    ~binary:
+      ( [ 1186 ]
+      , fun ~oid:_ s ->
+          Result.bind (Wire.expect_length s 16 ~what:"interval") ~f:(fun () ->
+            match Int64.to_int (Wire.int64 s 0) with
+            | None -> Error "interval microseconds do not fit a 63-bit int"
+            | Some microseconds ->
+              Ok
+                { Interval.microseconds; days = Wire.int32 s 8; months = Wire.int32 s 12 })
+      )
     ()
 ;;
 
@@ -643,6 +891,13 @@ let ofday =
     ~array_oid:(Some 1183)
     ~to_string:Ofday.to_string
     ~of_string:Ofday.of_string
+    ~binary:
+      ( [ 1083 ]
+      , fun ~oid:_ s ->
+          Result.bind (Wire.expect_length s 8 ~what:"time") ~f:(fun () ->
+            match Ofday.of_micros (Int64.to_int_exn (Wire.int64 s 0)) with
+            | Some t -> Ok t
+            | None -> Error "binary time out of range") )
     ()
 ;;
 
@@ -692,6 +947,34 @@ module Inet = struct
             Ok { address; prefix_length = n }
           | _ -> fail ()))
   ;;
+
+  (* family (2 = IPv4, 3 = IPv6), prefix bits, is_cidr, address length, address. *)
+  let of_binary s =
+    Wire.read ~what:"inet" (fun () ->
+      let family = Wire.byte s 0 in
+      let bits = Wire.byte s 1 in
+      let nb = Wire.byte s 3 in
+      if String.length s <> 4 + nb
+      then Error "binary inet: bad length"
+      else (
+        let byte i = Wire.byte s (4 + i) in
+        let text =
+          match family, nb with
+          | 2, 4 -> Some (sprintf "%d.%d.%d.%d" (byte 0) (byte 1) (byte 2) (byte 3))
+          | 3, 16 ->
+            Some
+              (List.init 8 ~f:(fun i ->
+                 sprintf "%x" ((byte (2 * i) lsl 8) lor byte ((2 * i) + 1)))
+               |> String.concat ~sep:":")
+          | _ -> None
+        in
+        match text with
+        | None -> Error (sprintf "binary inet: family %d with %d bytes" family nb)
+        | Some text ->
+          (match Inet_addr.of_string text with
+           | address -> Ok { address; prefix_length = bits }
+           | exception _ -> Error "binary inet: bad address")))
+  ;;
 end
 
 let inet =
@@ -701,6 +984,7 @@ let inet =
     ~array_oid:(Some 1041)
     ~to_string:Inet.to_string
     ~of_string:Inet.of_string
+    ~binary:([ 869 ], fun ~oid:_ s -> Inet.of_binary s)
     ()
 ;;
 
@@ -711,6 +995,7 @@ let cidr =
     ~array_oid:(Some 651)
     ~to_string:Inet.to_string
     ~of_string:Inet.of_string
+    ~binary:([ 650 ], fun ~oid:_ s -> Inet.of_binary s)
     ()
 ;;
 
@@ -836,6 +1121,31 @@ module Range = struct
   ;;
 end
 
+(* flags (empty 0x01, lower inclusive 0x02, upper inclusive 0x04, lower infinite 0x08,
+   upper infinite 0x10), then each finite bound as a length-prefixed value. *)
+let range_of_binary s ~element =
+  Wire.read ~what:"range" (fun () ->
+    let flags = Wire.byte s 0 in
+    if flags land 0x01 <> 0
+    then Ok Range.Empty
+    else (
+      let bound ~inclusive_bit ~infinite_bit pos =
+        if flags land infinite_bit <> 0
+        then Ok (Range.Unbounded, pos)
+        else (
+          match Binary.value s pos with
+          | None, _ -> Error "binary range: NULL bound"
+          | (Some _ as v), pos ->
+            Result.map (element v) ~f:(fun x ->
+              ( (if flags land inclusive_bit <> 0 then Range.Inclusive x else Exclusive x)
+              , pos )))
+      in
+      let open Result.Let_syntax in
+      let%bind lower, pos = bound ~inclusive_bit:0x02 ~infinite_bit:0x08 1 in
+      let%map upper, _ = bound ~inclusive_bit:0x04 ~infinite_bit:0x10 pos in
+      Range.Non_empty { lower; upper }))
+;;
+
 let range t =
   match t.range_oid with
   | None ->
@@ -869,5 +1179,14 @@ let range t =
                 let%bind lower = decode_bound lower in
                 let%map upper = decode_bound upper in
                 Range.Non_empty { lower; upper }))
+    ; binary =
+        (fun column_oid ->
+          match column_oid = oid, t.binary t.oid with
+          | true, Some element ->
+            Some
+              (function
+                | None -> null_error
+                | Some s -> range_of_binary s ~element)
+          | _ -> None)
     }
 ;;
