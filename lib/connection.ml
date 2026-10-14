@@ -30,6 +30,7 @@ type t =
   ; sequencer : unit Throttle.Sequencer.t
   ; backend_pid : int
   ; server_version_num : int
+  ; connected_at : Time_ns.t
   ; mutable state : state
   ; closed : unit Ivar.t
   ; mutable in_transaction : bool
@@ -44,6 +45,7 @@ type t =
 let config t = t.config
 let metrics t = t.metrics
 let backend_pid t = t.backend_pid
+let connected_at t = t.connected_at
 let server_version_num t = t.server_version_num
 
 let server_version t =
@@ -366,6 +368,7 @@ let rec connect ?metrics (config : Config.t) =
          ; sequencer = Throttle.Sequencer.create ()
          ; backend_pid
          ; server_version_num
+         ; connected_at = Time_ns.now ()
          ; state = Open
          ; closed = Ivar.create ()
          ; in_transaction = false

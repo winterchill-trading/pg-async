@@ -32,6 +32,9 @@ val config : t -> Config.t
 val metrics : t -> Metrics.t option
 val backend_pid : t -> int
 
+(** When the session was established. *)
+val connected_at : t -> Time_ns.t
+
 (** [PQserverVersion], e.g. [180003] for 18.3 and [90624] for 9.6.24. *)
 val server_version_num : t -> int
 
