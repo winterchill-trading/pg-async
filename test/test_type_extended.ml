@@ -233,3 +233,78 @@ let%expect_test "server spellings" =
       |}];
     return ())
 ;;
+
+let%expect_test "infinity for timestamptz and date" =
+  with_conn (fun conn ->
+    let ts = Type.with_infinity Type.time_ns in
+    let show sql =
+      let get () =
+        Query.fetch_one
+          conn
+          ("SELECT " ^ sql ^ " AS v WHERE $1::int IS NOT NULL")
+          ~params:[ Param.int 1 ]
+          ~row:(Row.column "v" ts)
+      in
+      (* Twice: text, then binary. *)
+      let%bind a = get () in
+      let%map b = get () in
+      print_s
+        [%message
+          sql
+            ~_:(a : (Time_ns.Alternate_sexp.t Type.Infinite.t, Pg_error.t) Result.t)
+            ~same:
+              ([%equal: (Time_ns.Alternate_sexp.t Type.Infinite.t, Pg_error.t) Result.t]
+                 a
+                 b
+               : bool)]
+    in
+    let%bind () = show "'infinity'::timestamptz" in
+    let%bind () = show "'-infinity'::timestamptz" in
+    let%bind () = show "'2026-10-14 00:00:00+00'::timestamptz" in
+    let%bind () =
+      server_round_trip
+        conn
+        ~name:"timestamptz with infinity"
+        ts
+        (Quickcheck.Generator.union
+           [ Quickcheck.Generator.of_list [ Type.Infinite.Infinity; Neg_infinity ]
+           ; Quickcheck.Generator.map Gens.time_ns ~f:(fun t -> Type.Infinite.Finite t)
+           ])
+        ~equal:[%equal: Time_ns.t Type.Infinite.t]
+        ~sexp_of:[%sexp_of: Time_ns.Alternate_sexp.t Type.Infinite.t]
+    in
+    let%bind () =
+      server_round_trip
+        conn
+        ~name:"date with infinity"
+        (Type.with_infinity Type.date)
+        (Quickcheck.Generator.union
+           [ Quickcheck.Generator.of_list [ Type.Infinite.Infinity; Neg_infinity ]
+           ; Quickcheck.Generator.map Gens.date ~f:(fun t -> Type.Infinite.Finite t)
+           ])
+        ~equal:[%equal: Date.t Type.Infinite.t]
+        ~sexp_of:[%sexp_of: Date.t Type.Infinite.t]
+    in
+    let%bind r =
+      Query.fetch_one
+        conn
+        "SELECT tstzrange('2026-01-01', 'infinity') AS v"
+        ~row:(Row.column "v" (Type.range ts))
+    in
+    print_s
+      [%sexp
+        (r : (Time_ns.Alternate_sexp.t Type.Infinite.t Type.Range.t, Pg_error.t) Result.t)];
+    [%expect
+      {|
+      ('infinity'::timestamptz (Ok Infinity) (same true))
+      ('-infinity'::timestamptz (Ok Neg_infinity) (same true))
+      ("'2026-10-14 00:00:00+00'::timestamptz" (Ok (Finite "2026-10-14 00:00:00Z"))
+       (same true))
+      timestamptz with infinity ok
+      date with infinity ok
+      (Ok
+       (Non_empty (lower (Inclusive (Finite "2026-01-01 00:00:00Z")))
+        (upper (Exclusive Infinity))))
+      |}];
+    return ())
+;;
