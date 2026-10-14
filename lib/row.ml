@@ -110,6 +110,7 @@ module Let_syntax = struct
       let inet = Type.inet
       let cidr = Type.cidr
       let range = Type.range
+      let with_infinity = Type.with_infinity
       let nullable = Type.nullable
       let array = Type.array
     end

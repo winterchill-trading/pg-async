@@ -53,6 +53,7 @@ module Let_syntax : sig
       val inet : Type.Inet.t Type.t
       val cidr : Type.Inet.t Type.t
       val range : 'a Type.t -> 'a Type.Range.t Type.t
+      val with_infinity : 'a Type.t -> 'a Type.Infinite.t Type.t
       val nullable : 'a Type.t -> 'a option Type.t
       val array : 'a Type.t -> 'a list Type.t
     end
