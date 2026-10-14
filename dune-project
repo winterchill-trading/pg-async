@@ -23,31 +23,28 @@
  (name pg-async)
  (synopsis "Non-blocking PostgreSQL client for Async, over libpq")
  (description
-  "pg-async drives libpq's asynchronous API from the Async scheduler, so queries, the connection handshake and TLS never block other jobs. It provides connections, a bounded pool with a minimum size and a maximum connection lifetime, typed parameters and applicative row decoders, a per-connection prepared-statement cache with binary results, transactions with serialization retries, ordered migrations, LISTEN/NOTIFY with reconnection, COPY FROM STDIN bulk loads and Prometheus metrics. The pg-async.testing library starts throwaway PostgreSQL clusters for tests. Needs libpq; built against the OxCaml compiler and Jane Street's v0.18 preview packages.")
+  "pg-async drives libpq's asynchronous API from the Async scheduler, so queries, the connection handshake and TLS never block other jobs. It provides connections, a bounded pool with a minimum size and a maximum connection lifetime, typed parameters and applicative row decoders, a per-connection prepared-statement cache with binary results, transactions with serialization retries, ordered migrations, LISTEN/NOTIFY with reconnection, COPY FROM STDIN bulk loads and Prometheus metrics. The pg-async.testing library starts throwaway PostgreSQL clusters for tests. Needs libpq. Builds with upstream OCaml 5.2 and Jane Street v0.17 as well as with OxCaml and the v0.18 previews.")
  (tags
   (postgresql database async libpq))
  (depends
-  oxcaml
   (ocaml
-   (and
-    (>= 5.2.0)
-    (< 5.3~)))
+   (>= 5.2.0))
   dune
   (core
    (and
-    (>= v0.18~preview.130.106+341)
+    (>= v0.17.2)
     (< v0.19~)))
   (core_unix
    (and
-    (>= v0.18~preview.130.106+341)
+    (>= v0.17.1)
     (< v0.19~)))
   (async
    (and
-    (>= v0.18~preview.130.106+341)
+    (>= v0.17.0)
     (< v0.19~)))
   (ppx_jane
    (and
-    (>= v0.18~preview.130.106+341)
+    (>= v0.17.0)
     (< v0.19~)))
   (postgresql
    (and
@@ -56,5 +53,7 @@
   (uri
    (>= 4.4.0))
   (yojson
-   (>= 2.2.0))
+   (and
+    (>= 2.2.0)
+    (< 4.0)))
   (odoc :with-doc)))
