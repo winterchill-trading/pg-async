@@ -1,7 +1,7 @@
-(* The README's quick start, built in CI so it keeps compiling. Run it against a
-   database with a [users] table and a [migrations] directory:
+(* The README's quick start, built in CI so it keeps compiling. Run it against a database
+   with a [users] table and a [migrations] directory:
 
-   DATABASE_URL=postgres://localhost/app?sslmode=disable dune exec ./examples/quick_start.exe *)
+   DATABASE_URL=postgres:///app?sslmode=disable dune exec examples/quick_start.exe *)
 
 open! Core
 open! Async
@@ -61,5 +61,7 @@ let main () =
 
 let () =
   Command_unix.run
-    (Command.async ~summary:"Apply migrations and register a user" (Command.Param.return main))
+    (Command.async
+       ~summary:"Apply migrations and register a user"
+       (Command.Param.return main))
 ;;
