@@ -300,6 +300,8 @@ flow, once the package is ready for opam:
 4. `dune-release opam pkg` and `dune-release opam submit` to open the opam-repository
    pull request.
 
+API docs are built with `dune build @doc` (odoc). CI fails on any odoc warning, so run it before tagging.
+
 ## Used by
 
 `neobank-api` and `hl-copy-api` in the same organisation.
