@@ -116,3 +116,82 @@ let rec canonical_json : Yojson.Safe.t -> Yojson.Safe.t = function
     `Float f
   | j -> j
 ;;
+
+let interval =
+  let open G.Let_syntax in
+  let%map months = Int.gen_incl (-100_000) 100_000
+  and days = Int.gen_incl (-1_000_000) 1_000_000
+  and microseconds =
+    G.weighted_union
+      [ 3., Int.gen_incl (-1_000_000_000_000_000) 1_000_000_000_000_000
+      ; 1., Int.gen_incl (-2_000_000) 2_000_000
+      ]
+  in
+  { Pg_async.Type.Interval.months; days; microseconds }
+;;
+
+let ofday =
+  G.map (Int.gen_incl 0 86_400_000_000) ~f:(fun us ->
+    Time_ns.Ofday.of_span_since_start_of_day_exn (Time_ns.Span.of_int_us us))
+;;
+
+(* [bits] leading bits of [bytes] kept, the rest cleared, as cidr requires. *)
+let mask bytes ~bits =
+  List.mapi bytes ~f:(fun i b ->
+    let keep = Int.clamp_exn (bits - (8 * i)) ~min:0 ~max:8 in
+    b land (0xff lsl (8 - keep)) land 0xff)
+;;
+
+let address_of_bytes bytes =
+  match bytes with
+  | [ a; b; c; d ] -> Core_unix.Inet_addr.of_string (sprintf "%d.%d.%d.%d" a b c d)
+  | _ ->
+    List.chunks_of bytes ~length:2
+    |> List.map ~f:(function
+      | [ hi; lo ] -> sprintf "%x" ((hi lsl 8) lor lo)
+      | _ -> assert false)
+    |> String.concat ~sep:":"
+    |> Core_unix.Inet_addr.of_string
+;;
+
+let inet_with ~masked =
+  let open G.Let_syntax in
+  let%bind width = G.of_list [ 4; 16 ] in
+  let%bind bytes = G.list_with_length width (Int.gen_incl 0 255) in
+  let%map prefix_length = Int.gen_incl 0 (8 * width) in
+  let bytes = if masked then mask bytes ~bits:prefix_length else bytes in
+  { Pg_async.Type.Inet.address = address_of_bytes bytes; prefix_length }
+;;
+
+let inet = inet_with ~masked:false
+let cidr = inet_with ~masked:true
+
+module R = Pg_async.Type.Range
+
+(* Ranges the server returns unchanged: for discrete element types, the canonical
+   [lower, upper) form with lower < upper. *)
+let discrete_range gen ~compare =
+  let open G.Let_syntax in
+  let%bind a = gen
+  and b = gen in
+  let lo, hi = if compare a b <= 0 then a, b else b, a in
+  if compare lo hi = 0
+  then return R.Empty
+  else (
+    let%map lower = G.of_list [ R.Inclusive lo; R.Unbounded ]
+    and upper = G.of_list [ R.Exclusive hi; R.Unbounded ] in
+    R.Non_empty { lower; upper })
+;;
+
+let continuous_range gen ~compare =
+  let open G.Let_syntax in
+  let%bind a = gen
+  and b = gen in
+  let lo, hi = if compare a b <= 0 then a, b else b, a in
+  if compare lo hi = 0
+  then return R.Empty
+  else (
+    let%map lower = G.of_list [ R.Inclusive lo; R.Exclusive lo; R.Unbounded ]
+    and upper = G.of_list [ R.Inclusive hi; R.Exclusive hi; R.Unbounded ] in
+    R.Non_empty { lower; upper })
+;;
