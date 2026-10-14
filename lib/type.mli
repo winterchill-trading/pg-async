@@ -35,9 +35,16 @@ val decode_binary : 'a t -> oid:int -> string option -> ('a, string) Result.t
 (** [int8]; also reads [int2] and [int4] columns. *)
 val int : int t
 
+(** [int4]; also reads [int2]. *)
 val int32 : int32 t
+
+(** [int8]; also reads [int2] and [int4]. *)
 val int64 : int64 t
+
+(** [text]; also reads [varchar], [bpchar] (padded) and [name]. *)
 val string : string t
+
+(** [bool]. *)
 val bool : bool t
 
 (** [float8]; NaN and infinities included. *)
@@ -47,6 +54,7 @@ val float : float t
     Reads any UTC offset. *)
 val time_ns : Time_ns.t t
 
+(** [date], years 1 to 9999. *)
 val date : Date.t t
 
 (** [bytea], hex format. *)
@@ -75,6 +83,7 @@ module Interval : sig
     }
   [@@deriving sexp, compare, equal, hash]
 
+  (** No time at all. *)
   val zero : t
 
   (** Microseconds only, truncated toward zero. *)
@@ -83,10 +92,14 @@ module Interval : sig
   (** [None] when [months] or [days] is not zero. *)
   val to_span : t -> Time_ns.Span.t option
 
+  (** The form sent to the server: [N mons N days [-]H:MM:SS.ffffff]. *)
   val to_string : t -> string
+
+  (** Reads the [postgres] and [iso_8601] interval styles. *)
   val of_string : string -> (t, string) Result.t
 end
 
+(** [interval]. *)
 val interval : Interval.t t
 
 (** [time] (without time zone), microsecond precision; [24:00:00] reads as
@@ -104,7 +117,10 @@ module Inet : sig
   (** [prefix_length] defaults to the full width of the address. *)
   val create : ?prefix_length:int -> Core_unix.Inet_addr.t -> t Or_error.t
 
+  (** [address/prefix_length]. *)
   val to_string : t -> string
+
+  (** An address with an optional [/prefix_length]. *)
   val of_string : string -> (t, string) Result.t
 end
 
@@ -131,11 +147,13 @@ module Range : sig
         }
   [@@deriving sexp, compare, equal]
 
+  (** Map the bound values. *)
   val map : 'a t -> f:('a -> 'b) -> 'b t
 
   (** The range literal syntax over already encoded elements. *)
   val to_literal : string t -> string
 
+  (** Parse a range literal; the elements are left encoded. *)
   val of_literal : string -> (string t, string) Result.t
 end
 
@@ -160,6 +178,7 @@ end
     [tstzrange] bound ([range (with_infinity time_ns)]). *)
 val with_infinity : 'a t -> 'a Infinite.t t
 
+(** Also accepts and produces SQL NULL, as [None]. *)
 val nullable : 'a t -> 'a option t
 
 (** One-dimensional arrays. Raises for an element codec without an array type (an array of
@@ -187,11 +206,17 @@ val map
 
 (** Array literal syntax, exposed for tests and {!Copy}. *)
 module Array_literal : sig
+  (** [{"a",NULL}]: every element quoted. *)
   val to_string : string option list -> string
+
+  (** Parse a one-dimensional array literal with default bounds. *)
   val of_string : string -> (string option list, string) Result.t
 end
 
 module Timestamptz : sig
+  (** ISO 8601 in UTC, e.g. [2026-10-13T12:00:00.5Z]. *)
   val to_string : Time_ns.t -> string
+
+  (** The server's output form or ISO 8601, any UTC offset. *)
   val of_string : string -> (Time_ns.t, string) Result.t
 end
