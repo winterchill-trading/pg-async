@@ -84,6 +84,11 @@ module Let_syntax = struct
       let yojson = Type.yojson
       let uuid = Type.uuid
       let numeric = Type.numeric
+      let interval = Type.interval
+      let ofday = Type.ofday
+      let inet = Type.inet
+      let cidr = Type.cidr
+      let range = Type.range
       let nullable = Type.nullable
       let array = Type.array
     end

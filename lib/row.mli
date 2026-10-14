@@ -48,6 +48,11 @@ module Let_syntax : sig
       val yojson : Yojson.Safe.t Type.t
       val uuid : string Type.t
       val numeric : string Type.t
+      val interval : Type.Interval.t Type.t
+      val ofday : Time_ns.Ofday.t Type.t
+      val inet : Type.Inet.t Type.t
+      val cidr : Type.Inet.t Type.t
+      val range : 'a Type.t -> 'a Type.Range.t Type.t
       val nullable : 'a Type.t -> 'a option Type.t
       val array : 'a Type.t -> 'a list Type.t
     end

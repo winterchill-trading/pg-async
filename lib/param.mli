@@ -24,6 +24,11 @@ val json : string -> t
 val yojson : Yojson.Safe.t -> t
 val uuid : string -> t
 val numeric : string -> t
+val interval : Type.Interval.t -> t
+val ofday : Time_ns.Ofday.t -> t
+val inet : Type.Inet.t -> t
+val cidr : Type.Inet.t -> t
+val range : 'a Type.t -> 'a Type.Range.t -> t
 val option : 'a Type.t -> 'a option -> t
 val array : 'a Type.t -> 'a list -> t
 

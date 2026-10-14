@@ -19,6 +19,11 @@ let json = create Type.json
 let yojson = create Type.yojson
 let uuid = create Type.uuid
 let numeric = create Type.numeric
+let interval = create Type.interval
+let ofday = create Type.ofday
+let inet = create Type.inet
+let cidr = create Type.cidr
+let range ty v = create (Type.range ty) v
 let option ty v = create (Type.nullable ty) v
 let array ty v = create (Type.array ty) v
 
