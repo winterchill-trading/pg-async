@@ -279,10 +279,13 @@ These need a design decision or depend on something outside the library:
 ## Portability
 
 The code uses no OxCaml-only syntax or modes (no `[@zero_alloc]`, `or_null`, unboxed
-types, `local_` or `let mutable`), only Jane Street's Core and Async APIs. It is built
-and tested on the OxCaml switch (`5.2.0+ox`, Jane Street `v0.18~preview`, which exist
-only in the OxCaml opam repository); a build on plain OCaml 5.2 with the v0.17 packages
-from opam-repository has not been tried yet.
+types, `local_` or `let mutable`), only Core and Async APIs present in both Jane Street
+v0.17 and v0.18. It builds and passes the whole test suite on:
+
+- OxCaml (`5.2.0+ox`, Jane Street `v0.18~preview`, from the OxCaml opam repository),
+  which CI runs;
+- upstream OCaml 5.2.0 with Core v0.17.2, Async v0.17.0, `yojson` 3.0.0 and `postgresql`
+  5.4.0 from opam-repository (checked by hand on 2026-10-14; not in CI).
 
 ## Releasing
 
