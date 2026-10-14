@@ -83,3 +83,55 @@ let%expect_test "of_env" =
   [%expect {| ("invalid number" (what PGPORT) (value abc)) |}];
   return ()
 ;;
+
+let%expect_test "of_url with several hosts" =
+  show (Config.of_url "postgres://app@db1:5432,db2:5433/main?sslmode=disable");
+  [%expect
+    {|
+    ((host (db1,db2)) (port ()) (user (app)) (password ()) (dbname (main))
+     (ssl_mode Disable) (ssl_root_cert ()) (application_name pg-async)
+     (connect_timeout 10s) (statement_timeout ()) (query_timeout ())
+     (statement_cache_size 256) (extra ((port 5432,5433))))
+    host='db1,db2' user='app' dbname='main' sslmode='disable' application_name='pg-async' connect_timeout='10' port='5432,5433'
+    postgres://app@db1:5432,db2:5433/main?sslmode=disable&application_name=pg-async
+    |}];
+  show (Config.of_url "postgres://db1,db2/main?sslmode=disable");
+  [%expect
+    {|
+    ((host (db1,db2)) (port ()) (user ()) (password ()) (dbname (main))
+     (ssl_mode Disable) (ssl_root_cert ()) (application_name pg-async)
+     (connect_timeout 10s) (statement_timeout ()) (query_timeout ())
+     (statement_cache_size 256) (extra ()))
+    host='db1,db2' dbname='main' sslmode='disable' application_name='pg-async' connect_timeout='10'
+    postgres://db1,db2/main?sslmode=disable&application_name=pg-async
+    |}];
+  show (Config.of_url "postgres://[::1]:6432,db2/main?sslmode=disable");
+  [%expect
+    {|
+    ((host (::1,db2)) (port ()) (user ()) (password ()) (dbname (main))
+     (ssl_mode Disable) (ssl_root_cert ()) (application_name pg-async)
+     (connect_timeout 10s) (statement_timeout ()) (query_timeout ())
+     (statement_cache_size 256) (extra ((port 6432,))))
+    host='::1,db2' dbname='main' sslmode='disable' application_name='pg-async' connect_timeout='10' port='6432,'
+    postgres://[::1]:6432,db2/main?sslmode=disable&application_name=pg-async
+    |}];
+  show (Config.of_url "postgres://db1:x,db2/main");
+  [%expect {| ("invalid number" (what port) (value x)) |}];
+  return ()
+;;
+
+let%expect_test "a multi-host URL falls through to the host that answers" =
+  let%bind cluster = Pg_test.shared () in
+  let config =
+    Config.of_url
+      (sprintf
+         "postgres://postgres@127.0.0.1:1,127.0.0.1:%d/postgres?sslmode=disable"
+         (Pg_test.port cluster))
+    |> ok_exn
+  in
+  let%bind conn = Connection.connect config >>| Pg_error.ok_exn in
+  let%bind r = Query.fetch_one conn "SELECT 1 AS one" ~row:(Row.column "one" Type.int) in
+  print_s [%sexp (r : (int, Pg_error.t) Result.t)];
+  [%expect {| (Ok 1) |}];
+  Connection.close conn
+;;
