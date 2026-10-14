@@ -52,6 +52,88 @@ val uuid : string t
 (** [numeric] as its exact text form. *)
 val numeric : string t
 
+(** [interval] as months, days and microseconds, the three fields PostgreSQL keeps
+    separately (a month is not a fixed number of days, nor a day of seconds). Reads both
+    the [postgres] and the [iso_8601] interval styles. *)
+module Interval : sig
+  type t =
+    { months : int
+    ; days : int
+    ; microseconds : int
+    }
+  [@@deriving sexp, compare, equal, hash]
+
+  val zero : t
+
+  (** Microseconds only, truncated toward zero. *)
+  val of_span : Time_ns.Span.t -> t
+
+  (** [None] when [months] or [days] is not zero. *)
+  val to_span : t -> Time_ns.Span.t option
+
+  val to_string : t -> string
+  val of_string : string -> (t, string) Result.t
+end
+
+val interval : Interval.t t
+
+(** [time] (without time zone), microsecond precision; [24:00:00] reads as
+    [Time_ns.Ofday.start_of_next_day]. *)
+val ofday : Time_ns.Ofday.t t
+
+(** An address with a prefix length, for [inet] and [cidr]. *)
+module Inet : sig
+  type t =
+    { address : Core_unix.Inet_addr.t
+    ; prefix_length : int (** 0 to 32 for IPv4, 0 to 128 for IPv6. *)
+    }
+  [@@deriving compare, equal, sexp_of]
+
+  (** [prefix_length] defaults to the full width of the address. *)
+  val create : ?prefix_length:int -> Core_unix.Inet_addr.t -> t Or_error.t
+
+  val to_string : t -> string
+  val of_string : string -> (t, string) Result.t
+end
+
+(** [inet]: a host address with an optional netmask. *)
+val inet : Inet.t t
+
+(** [cidr]: a network. The server rejects a value with bits set right of the prefix. *)
+val cidr : Inet.t t
+
+(** Range values. Discrete ranges ([int4range], [int8range], [daterange]) come back from
+    the server in canonical form, [\[lower, upper)]. *)
+module Range : sig
+  type 'a bound =
+    | Inclusive of 'a
+    | Exclusive of 'a
+    | Unbounded
+  [@@deriving sexp, compare, equal]
+
+  type 'a t =
+    | Empty
+    | Non_empty of
+        { lower : 'a bound
+        ; upper : 'a bound
+        }
+  [@@deriving sexp, compare, equal]
+
+  val map : 'a t -> f:('a -> 'b) -> 'b t
+
+  (** The range literal syntax over already encoded elements. *)
+  val to_literal : string t -> string
+
+  val of_literal : string -> (string t, string) Result.t
+end
+
+(** The range type over an element codec: [int4range] over {!int32}, [int8range] over
+    {!int} and {!int64}, [numrange] over {!numeric}, [tstzrange] over {!time_ns} and
+    [daterange] over {!date}.
+
+    Raises if the element codec has no range type. *)
+val range : 'a t -> 'a Range.t t
+
 val nullable : 'a t -> 'a option t
 
 (** One-dimensional arrays. Raises for an element codec without an array type (an array of
