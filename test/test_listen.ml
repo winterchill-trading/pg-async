@@ -72,3 +72,83 @@ let%expect_test "the pipe closes when the server drops the connection" =
   [%expect {| eof |}];
   Connection.close admin
 ;;
+
+let terminate_others config =
+  let%bind admin = Connection.connect config >>| ok in
+  let%bind (_ : int) =
+    Query.execute
+      admin
+      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = \
+       current_database() AND pid <> pg_backend_pid()"
+    >>| ok
+  in
+  Connection.close admin
+;;
+
+let%expect_test "a reconnecting listener survives a dropped connection" =
+  let%bind cluster = Pg_test.shared () in
+  let%bind config = Pg_test.create_database cluster in
+  let reconnected = Mvar.create () in
+  let%bind listener =
+    Listen.create
+      ~reconnect:true
+      ~backoff:(fun ~attempt:_ -> Time_ns.Span.of_int_ms 20)
+      ~on_reconnect:(fun () -> Mvar.set reconnected ())
+      config
+    >>| ok
+  in
+  let reader = Listen.notifications listener in
+  let%bind () = Listen.listen listener "a" >>| ok in
+  let%bind () = Listen.listen listener "b" >>| ok in
+  let%bind () = terminate_others config in
+  let%bind () = Mvar.take reconnected in
+  print_s
+    [%message (Listen.reconnects listener : int) (Listen.channels listener : string list)];
+  [%expect {| (("Listen.reconnects listener" 1) ("Listen.channels listener" (a b))) |}];
+  let%bind sender = Connection.connect config >>| ok in
+  let%bind () = Listen.notify sender ~channel:"b" ~payload:"after" >>| ok in
+  let%bind () = next reader in
+  [%expect {| (b after) |}];
+  let%bind () = Connection.close sender in
+  (* Once more, with a channel added around the time the session drops. *)
+  let%bind () = terminate_others config in
+  let%bind () = Listen.listen listener "c" >>| ok in
+  let%bind () = Mvar.take reconnected in
+  let%bind sender = Connection.connect config >>| ok in
+  let%bind () = Listen.notify sender ~channel:"c" ~payload:"new" >>| ok in
+  let%bind () = next reader in
+  print_s [%message (Listen.reconnects listener : int)];
+  [%expect {|
+    (c new)
+    ("Listen.reconnects listener" 2)
+    |}];
+  let%bind () = Connection.close sender in
+  let%bind () = Listen.close listener in
+  let%bind () = next reader in
+  [%expect {| eof |}];
+  return ()
+;;
+
+let%expect_test "closing a listener stops it reconnecting" =
+  let%bind cluster = Pg_test.shared () in
+  let%bind config = Pg_test.create_database cluster in
+  let%bind listener =
+    Listen.create
+      ~reconnect:true
+      ~backoff:(fun ~attempt:_ -> Time_ns.Span.of_int_ms 50)
+      config
+    >>| ok
+  in
+  let%bind () = Listen.listen listener "a" >>| ok in
+  let%bind () = terminate_others config in
+  let%bind () = Listen.close listener in
+  let%bind () = Clock_ns.after (Time_ns.Span.of_int_ms 200) in
+  let%bind r = Listen.listen listener "b" in
+  print_s [%message (Listen.reconnects listener : int) (r : (unit, Pg_error.t) Result.t)];
+  let%bind () = next (Listen.notifications listener) in
+  [%expect {|
+    (("Listen.reconnects listener" 0) (r (Error Closed)))
+    eof
+    |}];
+  return ()
+;;
